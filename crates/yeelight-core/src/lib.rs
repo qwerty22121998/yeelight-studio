@@ -4,5 +4,7 @@
 #![deny(missing_docs)]
 
 pub mod error;
+pub mod message;
 
 pub use error::{Error, Result};
+pub use message::Notification;
