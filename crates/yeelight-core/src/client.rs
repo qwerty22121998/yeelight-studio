@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use serde_json::Value;
@@ -34,6 +34,8 @@ pub struct Client {
     pending: Pending,
     notifications: broadcast::Sender<Notification>,
     local_addr: SocketAddr,
+    /// When set, [`Client::call_supported`] skips the local `support`-set check.
+    force: AtomicBool,
 }
 
 impl Client {
@@ -90,6 +92,7 @@ impl Client {
             pending,
             notifications: tx,
             local_addr,
+            force: AtomicBool::new(false),
         })
     }
 
@@ -133,12 +136,22 @@ impl Client {
         result
     }
 
-    /// Like [`Client::call`] but first verifies the device advertises `method`.
+    /// Like [`Client::call`] but first verifies the device advertises `method`,
+    /// unless [`Client::set_force`] has disabled that check.
     pub(crate) async fn call_supported(&self, method: &str, params: Vec<Value>) -> Result<Value> {
-        if !self.device.supports(method) {
+        if !self.force.load(Ordering::Relaxed) && !self.device.supports(method) {
             return Err(Error::Unsupported(method.to_string()));
         }
         self.call(method, params).await
+    }
+
+    /// Send commands even when the device's `support` set omits the method.
+    ///
+    /// Off by default. When on, the typed methods no longer fail fast with
+    /// [`Error::Unsupported`]; the device itself may still reject the command
+    /// with [`Error::Protocol`]. Useful for bulbs that under-report support.
+    pub fn set_force(&self, force: bool) {
+        self.force.store(force, Ordering::Relaxed);
     }
 
     /// Subscribe to the stream of state-change notifications (spec §4.3).
