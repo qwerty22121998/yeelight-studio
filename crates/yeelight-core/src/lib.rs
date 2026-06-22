@@ -3,11 +3,17 @@
 //! Implements the [Yeelight inter-operation spec](../../../docs/yeelight-spec.md).
 #![deny(missing_docs)]
 
+pub mod client;
+pub mod commands;
 pub mod device;
 pub mod discovery;
 pub mod error;
 pub mod message;
 
+pub use client::Client;
+pub use commands::{
+    AdjustAction, AdjustProp, CronType, Effect, FlowAction, FlowExpr, FlowTuple, PowerMode, Scene,
+};
 pub use device::{Device, Model, State};
 pub use discovery::{Listener, search};
 pub use error::{Error, Result};
