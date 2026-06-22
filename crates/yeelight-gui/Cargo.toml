@@ -1,0 +1,16 @@
+[package]
+name = "yeelight-gui"
+description = "Desktop GUI for discovering and controlling Yeelight WiFi LEDs."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+yeelight-core = { path = "../yeelight-core" }
+iced = { version = "0.14", features = ["tokio"] }
+iced_aw = { version = "0.14", default-features = false, features = ["color_picker"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+dark-light = "2"
