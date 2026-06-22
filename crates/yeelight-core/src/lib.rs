@@ -10,6 +10,7 @@ pub mod discovery;
 pub mod error;
 pub mod firewall;
 pub mod message;
+pub mod music;
 
 pub use client::Client;
 pub use commands::{
@@ -19,3 +20,4 @@ pub use device::{Device, Model, State};
 pub use discovery::{Listener, search};
 pub use error::{Error, Result};
 pub use message::Notification;
+pub use music::{DEFAULT_MUSIC_PORT, MusicConnection};
