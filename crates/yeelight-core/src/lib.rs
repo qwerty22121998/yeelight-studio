@@ -8,6 +8,7 @@ pub mod commands;
 pub mod device;
 pub mod discovery;
 pub mod error;
+pub mod firewall;
 pub mod message;
 
 pub use client::Client;
