@@ -584,8 +584,16 @@ impl App {
         self.run_selected("name set", move |c| async move { c.set_name(&name).await })
     }
 
-    /// Apply a preset scene by index (stub; filled in a later task).
-    fn apply_scene(&mut self, _i: usize) -> Task<Message> { Task::none() }
+    /// Apply a preset scene (by index into [`crate::presets::SCENES`]) to the
+    /// targeted light.
+    fn apply_scene(&mut self, i: usize) -> Task<Message> {
+        let Some(p) = crate::presets::SCENES.get(i) else { return Task::none() };
+        let scene = (p.make)();
+        let bg = self.target_light().is_bg();
+        self.run_selected("scene applied", move |c| async move {
+            if bg { c.bg_set_scene(scene).await } else { c.set_scene(scene).await }
+        })
+    }
     /// Apply a preset flow by index (stub; filled in a later task).
     fn apply_flow_preset(&mut self, _i: usize) -> Task<Message> { Task::none() }
     /// Start the custom flow from the editor draft (stub; filled in a later task).
