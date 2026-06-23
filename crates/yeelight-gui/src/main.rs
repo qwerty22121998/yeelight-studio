@@ -5,6 +5,7 @@
 
 mod app;
 mod message;
+mod presets;
 mod view;
 
 use app::App;
