@@ -9,7 +9,7 @@ use std::time::Duration;
 use iced::{Color, Element, Subscription, Task};
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::{Stream, StreamExt};
-use yeelight_core::{Client, Effect, State, discovery, firewall};
+use yeelight_core::{Client, Effect, FlowAction, FlowExpr, FlowTuple, State, discovery, firewall};
 
 use crate::message::{Btn, CmdKind, FlowField, Message, Op, OpKey, SettingsTab, ThemePref};
 use crate::view;
@@ -594,10 +594,48 @@ impl App {
             if bg { c.bg_set_scene(scene).await } else { c.set_scene(scene).await }
         })
     }
-    /// Apply a preset flow by index (stub; filled in a later task).
-    fn apply_flow_preset(&mut self, _i: usize) -> Task<Message> { Task::none() }
-    /// Start the custom flow from the editor draft (stub; filled in a later task).
-    fn start_custom_flow(&mut self) -> Task<Message> { Task::none() }
+    /// Apply a preset flow (by index into [`crate::presets::FLOWS`]) to the
+    /// targeted light.
+    fn apply_flow_preset(&mut self, i: usize) -> Task<Message> {
+        let Some(p) = crate::presets::FLOWS.get(i) else { return Task::none() };
+        let (count, action, expr) = (p.count, p.action, (p.make)());
+        let bg = self.target_light().is_bg();
+        self.run_selected("flow started", move |c| async move {
+            if bg {
+                c.bg_start_cf(count, action, expr).await
+            } else {
+                c.start_cf(count, action, expr).await
+            }
+        })
+    }
+
+    /// Start the custom flow from the editor draft. Validates the expression
+    /// locally (non-empty, each step >=50ms) before sending so a bad draft
+    /// surfaces in the status bar instead of a device rejection.
+    fn start_custom_flow(&mut self) -> Task<Message> {
+        let Some(id) = self.selected_id() else { return Task::none() };
+        let rows = self.flow_rows.get(&id).cloned().unwrap_or_default();
+        let count = self.flow_count.get(&id).and_then(|s| s.parse().ok()).unwrap_or(0u32);
+        let expr = match rows_to_expr(&rows) {
+            Ok(e) => e,
+            Err(e) => {
+                self.status = Status::Err(e);
+                return Task::none();
+            }
+        };
+        if let Err(e) = expr.render() {
+            self.status = Status::Err(e.to_string());
+            return Task::none();
+        }
+        let bg = self.target_light().is_bg();
+        self.run_selected("flow started", move |c| async move {
+            if bg {
+                c.bg_start_cf(count, FlowAction::Recover, expr).await
+            } else {
+                c.start_cf(count, FlowAction::Recover, expr).await
+            }
+        })
+    }
     /// Start the sleep timer (stub; filled in a later task).
     fn timer_start(&mut self) -> Task<Message> { Task::none() }
     /// Cancel the sleep timer (stub; filled in a later task).
@@ -781,6 +819,25 @@ pub(crate) fn u32_to_color(rgb: u32) -> Color {
     )
 }
 
+/// Convert custom-flow editor rows to a [`FlowExpr`]. Unparseable fields fall
+/// back to safe defaults (`0`, or `-1` "keep brightness"); the device-side
+/// rules (each step >=50ms etc.) are enforced later by [`FlowExpr::render`].
+fn rows_to_expr(rows: &[FlowRow]) -> Result<FlowExpr, String> {
+    if rows.is_empty() {
+        return Err("flow has no steps".into());
+    }
+    let tuples = rows
+        .iter()
+        .map(|r| FlowTuple {
+            duration: r.duration.parse().unwrap_or(0),
+            mode: r.mode,
+            value: r.value.parse().unwrap_or(0),
+            brightness: r.bright.parse().unwrap_or(-1),
+        })
+        .collect();
+    Ok(FlowExpr(tuples))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -790,5 +847,22 @@ mod tests {
         for rgb in [0x000000, 0xFF0000, 0x00FF00, 0x0000FF, 0x123456, 0xFFFFFF] {
             assert_eq!(color_to_u32(u32_to_color(rgb)), rgb);
         }
+    }
+
+    #[test]
+    fn flow_rows_build_valid_expr() {
+        let rows = vec![
+            FlowRow { duration: "1000".into(), mode: 1, value: "16711680".into(), bright: "100".into() },
+            FlowRow { duration: "500".into(), mode: 2, value: "2700".into(), bright: "50".into() },
+        ];
+        let expr = rows_to_expr(&rows).unwrap();
+        assert_eq!(expr.render().unwrap(), "1000,1,16711680,100,500,2,2700,50");
+    }
+
+    #[test]
+    fn flow_rows_reject_short_duration() {
+        // Builds, but render() enforces the >=50ms rule from core.
+        let rows = vec![FlowRow { duration: "10".into(), mode: 1, value: "1".into(), bright: "1".into() }];
+        assert!(rows_to_expr(&rows).unwrap().render().is_err());
     }
 }
