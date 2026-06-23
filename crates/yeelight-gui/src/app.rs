@@ -362,6 +362,7 @@ impl App {
             Message::SelectTab(i) => {
                 if i < self.devices.len() {
                     self.selected = Some(i);
+                    self.screen = crate::message::Screen::Device;
                 }
                 Task::none()
             }
