@@ -377,7 +377,6 @@ impl App {
                 }
                 Task::none()
             }
-            Message::Quit => iced::exit(),
             Message::SelectScreen(s) => { self.screen = s; Task::none() }
             Message::SelectTab(i) => {
                 if i < self.devices.len() {

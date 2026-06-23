@@ -24,11 +24,22 @@ pub(crate) fn pane(app: &App) -> Element<'_, Message> {
         SettingsTab::Appearance => appearance(app),
     };
 
-    container(column![text("Settings").size(22), tabs, content].spacing(16))
-        .padding(20)
-        .width(Fill)
-        .height(Fill)
-        .into()
+    let back = button(text("\u{2190} Devices"))
+        .style(button::text)
+        .on_press(Message::SelectScreen(crate::message::Screen::Device));
+
+    container(
+        column![
+            row![back, text("Settings").size(22)].spacing(10).align_y(iced::Center),
+            tabs,
+            content,
+        ]
+        .spacing(16),
+    )
+    .padding(20)
+    .width(Fill)
+    .height(Fill)
+    .into()
 }
 
 /// General tab: discover timeout, the fixed multicast group, and the force toggle.

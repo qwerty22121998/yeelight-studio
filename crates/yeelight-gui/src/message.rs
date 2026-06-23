@@ -175,8 +175,6 @@ pub(crate) enum Message {
     PortPromptAnswered(bool),
     /// The sudo open-port attempt finished.
     PortOpened(Result<(), String>),
-    /// Quit the application.
-    Quit,
     /// Switch the detail pane between the device screen and settings.
     SelectScreen(Screen),
     /// Select a device tab by index.
