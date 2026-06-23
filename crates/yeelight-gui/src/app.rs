@@ -9,8 +9,10 @@ use std::time::Duration;
 use iced::{Color, Element, Subscription, Task};
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::{Stream, StreamExt};
+use serde_json::{Value, json};
 use yeelight_core::{
-    Client, CronType, Effect, FlowAction, FlowExpr, FlowTuple, State, discovery, firewall,
+    Client, CronType, DEFAULT_MUSIC_PORT, Effect, FlowAction, FlowExpr, FlowTuple, MusicConnection,
+    State, discovery, firewall,
 };
 
 use crate::message::{Btn, CmdKind, FlowField, Message, Op, OpKey, SettingsTab, ThemePref};
@@ -271,6 +273,22 @@ impl App {
         };
         let key: OpKey = (id, bg, btn);
         self.inflight.insert(key.clone());
+
+        // Instant mode: stream continuous controls (color/bright/temp) fire-and-forget
+        // over the music channel — no rate limit, no reply. Power/toggle fall through
+        // to the request/response client below.
+        if let Some(session) = self.music.get(&key.0).cloned()
+            && let Some((method, params)) = music_params(op)
+        {
+            self.inflight.remove(&key); // music sends don't await a reply
+            return Task::perform(
+                async move {
+                    let mut s = session.lock().await;
+                    s.send(method, params).await.map(|()| op.label()).map_err(|e| e.to_string())
+                },
+                move |result| Message::CommandDone { key: key.clone(), result },
+            );
+        }
 
         if let Some(client) = self.clients.get(&key.0) {
             run_task(Arc::clone(client), op, key)
@@ -670,8 +688,34 @@ impl App {
         }
         self.timers.retain(|_, t| t.remaining.is_some());
     }
-    /// Toggle music instant-control mode (stub; filled in a later task).
-    fn music_toggle(&mut self) -> Task<Message> { Task::none() }
+    /// Toggle music "instant control" mode for the selected device. Off → on opens
+    /// a [`MusicConnection`] (requires an existing client); on → off disables it.
+    fn music_toggle(&mut self) -> Task<Message> {
+        let Some(i) = self.selected else { return Task::none() };
+        let id = self.devices[i].id.clone();
+
+        // Already on → turn off: drop the session and disable music mode on the device.
+        if self.music.remove(&id).is_some() {
+            self.status = Status::Ok("instant mode off".into());
+            return self.run_selected("instant mode off", |c| async move { c.set_music_off().await });
+        }
+
+        // Turn on: needs a connected client to start the reverse channel.
+        let Some(client) = self.clients.get(&id).cloned() else {
+            self.status = Status::Err("connect first (use a control), then enable instant mode".into());
+            return Task::none();
+        };
+        self.status = Status::Ok("starting instant mode…".into());
+        Task::perform(
+            async move {
+                MusicConnection::start(&client, DEFAULT_MUSIC_PORT)
+                    .await
+                    .map(|m| Arc::new(tokio::sync::Mutex::new(m)))
+                    .map_err(|e| e.to_string())
+            },
+            move |session| Message::MusicStarted { id: id.clone(), session },
+        )
+    }
 
     /// Run a one-shot async operation against the selected device's client.
     ///
@@ -794,6 +838,24 @@ async fn ask_open_port() -> bool {
         .show()
         .await
         == rfd::MessageDialogResult::Yes
+}
+
+/// Map a streamed [`Op`] to a `(method, params)` for [`MusicConnection::send`].
+/// Returns `None` for ops that should not stream (power/toggle still go through the
+/// request/response client). Uses a `sudden` transition — streaming wants instant steps.
+fn music_params(op: Op) -> Option<(&'static str, Vec<Value>)> {
+    let with_sudden = |v: u32, method: &'static str| {
+        (method, vec![json!(v), json!("sudden"), json!(0)])
+    };
+    match op {
+        Op::SetRgb(false, rgb) => Some(with_sudden(rgb, "set_rgb")),
+        Op::SetRgb(true, rgb) => Some(with_sudden(rgb, "bg_set_rgb")),
+        Op::SetBright(false, b) => Some(with_sudden(b as u32, "set_bright")),
+        Op::SetBright(true, b) => Some(with_sudden(b as u32, "bg_set_bright")),
+        Op::SetCt(false, ct) => Some(with_sudden(ct as u32, "set_ct_abx")),
+        Op::SetCt(true, ct) => Some(with_sudden(ct as u32, "bg_set_ct_abx")),
+        Op::Toggle(_) | Op::SetPower(..) => None,
+    }
 }
 
 /// Build the async task that sends one resolved [`Op`] to the bulb.
