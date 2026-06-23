@@ -14,3 +14,4 @@ iced = { version = "0.14", features = ["tokio"] }
 iced_aw = { version = "0.14", default-features = false, features = ["color_picker"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 dark-light = "2"
+rfd = "0.15"

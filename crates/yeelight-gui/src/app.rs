@@ -79,6 +79,8 @@ pub(crate) struct App {
     pub(crate) scan_progress: f32,
     /// Buttons whose command is awaiting a reply (so only they disable).
     pub(crate) inflight: HashSet<OpKey>,
+    /// The discovery port is known-open (from the startup check or after opening it).
+    pub(crate) port_open: bool,
 }
 
 impl Default for App {
@@ -98,11 +100,44 @@ impl Default for App {
             scanning: false,
             scan_progress: 0.0,
             inflight: HashSet::new(),
+            port_open: false,
         }
     }
 }
 
 impl App {
+    /// Initial state plus the startup firewall check. If the discovery port is
+    /// already open the [`Message::PortChecked`] handler auto-starts a scan;
+    /// otherwise the app idles until the user presses Scan.
+    pub(crate) fn boot() -> (Self, Task<Message>) {
+        let task = Task::perform(
+            async move {
+                firewall::is_udp_open(discovery::SSDP_PORT)
+                    .await
+                    .map_err(|e| e.to_string())
+            },
+            Message::PortChecked,
+        );
+        (Self::default(), task)
+    }
+
+    /// Kick off a LAN scan. Assumes the discovery port is open (caller gates on
+    /// [`App::port_open`]).
+    fn start_scan(&mut self) -> Task<Message> {
+        self.scanning = true;
+        self.scan_progress = 0.0;
+        self.status = Status::Ok("scanning…".into());
+        let secs = self.timeout_secs.max(1) as u64;
+        Task::perform(
+            async move {
+                discovery::search(Duration::from_secs(secs))
+                    .await
+                    .map_err(|e| e.to_string())
+            },
+            Message::Scanned,
+        )
+    }
+
     /// Whether the given control currently has a command in flight.
     pub(crate) fn btn_busy(&self, id: &str, bg: bool, btn: Btn) -> bool {
         self.inflight.contains(&(id.to_owned(), bg, btn))
@@ -196,21 +231,56 @@ impl App {
     pub(crate) fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Scan => {
-                self.scanning = true;
-                self.scan_progress = 0.0;
-                self.status = Status::Ok("scanning…".into());
-                let secs = self.timeout_secs.max(1) as u64;
+                if self.port_open {
+                    self.start_scan()
+                } else {
+                    // ponytail: port_open is cached from the startup check; if it
+                    // went stale the idempotent sudo open below recovers. Not worth
+                    // an async re-check on every press.
+                    Task::perform(ask_open_port(), Message::PortPromptAnswered)
+                }
+            }
+            Message::PortChecked(res) => match res {
+                Ok(true) => {
+                    self.port_open = true;
+                    self.start_scan()
+                }
+                Ok(false) => {
+                    self.status =
+                        Status::Ok("discovery port closed — press Scan to open it".into());
+                    Task::none()
+                }
+                Err(e) => {
+                    self.status = Status::Err(e);
+                    Task::none()
+                }
+            },
+            Message::PortPromptAnswered(false) => {
+                self.status =
+                    Status::Ok("discovery port closed — press Scan to open it".into());
+                Task::none()
+            }
+            Message::PortPromptAnswered(true) => {
+                self.status = Status::Ok("opening discovery port…".into());
                 Task::perform(
                     async move {
-                        // Best-effort: no-op if ufw is missing/inactive.
-                        let _ = firewall::ensure_udp_open(discovery::SSDP_PORT).await;
-                        discovery::search(Duration::from_secs(secs))
+                        firewall::ensure_udp_open_pkexec(discovery::SSDP_PORT)
                             .await
                             .map_err(|e| e.to_string())
                     },
-                    Message::Scanned,
+                    Message::PortOpened,
                 )
             }
+            Message::PortOpened(res) => match res {
+                Ok(()) => {
+                    self.port_open = true;
+                    self.start_scan()
+                }
+                Err(e) => {
+                    self.status = Status::Err(e);
+                    Task::none()
+                }
+            },
             Message::Scanned(res) => {
                 self.scanning = false;
                 match res {
@@ -424,6 +494,24 @@ fn apply_props(state: &mut State, params: &HashMap<String, String>) {
             _ => {}
         }
     }
+}
+
+/// Show a native yes/no popup asking to open the (closed) discovery port.
+/// Returns `true` if the user agreed. On yes, the privileged `ufw allow` runs via
+/// `pkexec`, so the system's own polkit dialog collects the password — no terminal.
+async fn ask_open_port() -> bool {
+    rfd::AsyncMessageDialog::new()
+        .set_level(rfd::MessageLevel::Info)
+        .set_title("Yeelight Studio")
+        .set_description(format!(
+            "Discovery port {}/udp is closed in the firewall.\n\nOpen it now? \
+             Your system will ask for your password.",
+            discovery::SSDP_PORT
+        ))
+        .set_buttons(rfd::MessageButtons::YesNo)
+        .show()
+        .await
+        == rfd::MessageDialogResult::Yes
 }
 
 /// Build the async task that sends one resolved [`Op`] to the bulb.

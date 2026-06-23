@@ -111,6 +111,12 @@ pub(crate) enum Message {
     Scan,
     /// Scan finished (devices or an error string).
     Scanned(Result<Vec<Device>, String>),
+    /// Startup firewall check: is the discovery port already open?
+    PortChecked(Result<bool, String>),
+    /// Native open-port permission popup was answered (`true` = open it).
+    PortPromptAnswered(bool),
+    /// The sudo open-port attempt finished.
+    PortOpened(Result<(), String>),
     /// Quit the application.
     Quit,
     /// Switch the sidebar pane.

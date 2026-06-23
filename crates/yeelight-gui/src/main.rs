@@ -10,7 +10,7 @@ mod view;
 use app::App;
 
 fn main() -> iced::Result {
-    iced::application(App::default, App::update, App::view)
+    iced::application(App::boot, App::update, App::view)
         .title("Yeelight Studio")
         .theme(App::theme)
         .subscription(App::subscription)
