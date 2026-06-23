@@ -9,7 +9,9 @@ use std::time::Duration;
 use iced::{Color, Element, Subscription, Task};
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::{Stream, StreamExt};
-use yeelight_core::{Client, Effect, FlowAction, FlowExpr, FlowTuple, State, discovery, firewall};
+use yeelight_core::{
+    Client, CronType, Effect, FlowAction, FlowExpr, FlowTuple, State, discovery, firewall,
+};
 
 use crate::message::{Btn, CmdKind, FlowField, Message, Op, OpKey, SettingsTab, ThemePref};
 use crate::view;
@@ -636,12 +638,38 @@ impl App {
             }
         })
     }
-    /// Start the sleep timer (stub; filled in a later task).
-    fn timer_start(&mut self) -> Task<Message> { Task::none() }
-    /// Cancel the sleep timer (stub; filled in a later task).
-    fn timer_cancel(&mut self) -> Task<Message> { Task::none() }
-    /// Advance all active timers by one second (stub; filled in a later task).
-    fn tick_timers(&mut self) {}
+    /// Start a sleep timer on the selected device: power off after the entered
+    /// minutes. Seeds a local countdown the [`Message::TimerTick`] subscription drives.
+    fn timer_start(&mut self) -> Task<Message> {
+        let Some(id) = self.selected_id() else { return Task::none() };
+        let mins: u32 = self.timer_input.get(&id).and_then(|s| s.parse().ok()).unwrap_or(0);
+        if mins == 0 {
+            self.status = Status::Err("enter minutes > 0".into());
+            return Task::none();
+        }
+        self.timers.insert(id, TimerState { remaining: Some(mins * 60) });
+        self.run_selected("timer started", move |c| async move {
+            c.cron_add(CronType::PowerOff, mins).await
+        })
+    }
+
+    /// Cancel the selected device's sleep timer.
+    fn timer_cancel(&mut self) -> Task<Message> {
+        if let Some(id) = self.selected_id() {
+            self.timers.remove(&id);
+        }
+        self.run_selected("timer cancelled", |c| async move { c.cron_del(CronType::PowerOff).await })
+    }
+
+    /// Advance all active countdowns by one second, dropping any that hit zero.
+    fn tick_timers(&mut self) {
+        for t in self.timers.values_mut() {
+            if let Some(r) = t.remaining {
+                t.remaining = Some(r.saturating_sub(1)).filter(|&x| x > 0);
+            }
+        }
+        self.timers.retain(|_, t| t.remaining.is_some());
+    }
     /// Toggle music instant-control mode (stub; filled in a later task).
     fn music_toggle(&mut self) -> Task<Message> { Task::none() }
 
@@ -699,6 +727,9 @@ impl App {
             .collect();
         if self.scanning {
             subs.push(iced::time::every(Duration::from_millis(100)).map(|_| Message::Tick));
+        }
+        if !self.timers.is_empty() {
+            subs.push(iced::time::every(Duration::from_secs(1)).map(|_| Message::TimerTick));
         }
         Subscription::batch(subs)
     }
