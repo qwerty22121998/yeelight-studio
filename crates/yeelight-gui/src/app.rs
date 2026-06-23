@@ -126,8 +126,6 @@ pub(crate) struct App {
     pub(crate) port_open: bool,
     /// Active control tab per device id.
     pub(crate) tabs: HashMap<String, crate::message::DetailTab>,
-    /// Which light (main/bg) controls target, per device id.
-    pub(crate) target: HashMap<String, crate::message::Light>,
     /// In-progress rename buffer (device id, new name), if editing.
     pub(crate) rename: Option<(String, String)>,
     /// Custom flow-editor draft rows per device id.
@@ -161,7 +159,6 @@ impl Default for App {
             inflight: HashSet::new(),
             port_open: false,
             tabs: HashMap::new(),
-            target: HashMap::new(),
             rename: None,
             flow_rows: HashMap::new(),
             flow_count: HashMap::new(),
@@ -251,8 +248,8 @@ impl App {
         // State has only main-light fields, so bg ops update nothing locally.
         let d = &mut self.devices[i];
         match op {
-            Op::Toggle(_) => d.state.power = Some(!d.state.power.unwrap_or(false)),
-            Op::SetPower(_, on) => d.state.power = Some(on),
+            Op::Toggle(false) => d.state.power = Some(!d.state.power.unwrap_or(false)),
+            Op::SetPower(false, on) => d.state.power = Some(on),
             Op::SetRgb(false, rgb) => {
                 d.state.rgb = Some(rgb);
                 d.state.color_mode = Some(1);
@@ -262,7 +259,12 @@ impl App {
                 d.state.ct = Some(ct);
                 d.state.color_mode = Some(2);
             }
-            Op::SetRgb(true, _) | Op::SetBright(true, _) | Op::SetCt(true, _) => {}
+            // Background light has no local state mirror; the next scan reconciles it.
+            Op::Toggle(true)
+            | Op::SetPower(true, _)
+            | Op::SetRgb(true, _)
+            | Op::SetBright(true, _)
+            | Op::SetCt(true, _) => {}
         }
 
         let btn = match kind {
@@ -387,10 +389,6 @@ impl App {
             }
             Message::SelectDetailTab(t) => {
                 if let Some(id) = self.selected_id() { self.tabs.insert(id, t); }
-                Task::none()
-            }
-            Message::SelectLight(l) => {
-                if let Some(id) = self.selected_id() { self.target.insert(id, l); }
                 Task::none()
             }
             Message::RenameStart => {
@@ -580,13 +578,6 @@ impl App {
         self.theme.clone()
     }
 
-    /// Which light controls currently target for the selected device.
-    pub(crate) fn target_light(&self) -> crate::message::Light {
-        self.selected_id()
-            .and_then(|id| self.target.get(&id).copied())
-            .unwrap_or_default()
-    }
-
     /// The active detail tab for the selected device.
     pub(crate) fn active_tab(&self) -> crate::message::DetailTab {
         self.selected_id()
@@ -604,27 +595,18 @@ impl App {
     }
 
     /// Apply a preset scene (by index into [`crate::presets::SCENES`]) to the
-    /// targeted light.
+    /// main light.
     fn apply_scene(&mut self, i: usize) -> Task<Message> {
         let Some(p) = crate::presets::SCENES.get(i) else { return Task::none() };
         let scene = (p.make)();
-        let bg = self.target_light().is_bg();
-        self.run_selected("scene applied", move |c| async move {
-            if bg { c.bg_set_scene(scene).await } else { c.set_scene(scene).await }
-        })
+        self.run_selected("scene applied", move |c| async move { c.set_scene(scene).await })
     }
-    /// Apply a preset flow (by index into [`crate::presets::FLOWS`]) to the
-    /// targeted light.
+    /// Apply a preset flow (by index into [`crate::presets::FLOWS`]) to the main light.
     fn apply_flow_preset(&mut self, i: usize) -> Task<Message> {
         let Some(p) = crate::presets::FLOWS.get(i) else { return Task::none() };
         let (count, action, expr) = (p.count, p.action, (p.make)());
-        let bg = self.target_light().is_bg();
         self.run_selected("flow started", move |c| async move {
-            if bg {
-                c.bg_start_cf(count, action, expr).await
-            } else {
-                c.start_cf(count, action, expr).await
-            }
+            c.start_cf(count, action, expr).await
         })
     }
 
@@ -646,13 +628,8 @@ impl App {
             self.status = Status::Err(e.to_string());
             return Task::none();
         }
-        let bg = self.target_light().is_bg();
         self.run_selected("flow started", move |c| async move {
-            if bg {
-                c.bg_start_cf(count, FlowAction::Recover, expr).await
-            } else {
-                c.start_cf(count, FlowAction::Recover, expr).await
-            }
+            c.start_cf(count, FlowAction::Recover, expr).await
         })
     }
     /// Start a sleep timer on the selected device: power off after the entered

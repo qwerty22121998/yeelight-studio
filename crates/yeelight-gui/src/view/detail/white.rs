@@ -9,9 +9,8 @@ use crate::app::App;
 use crate::message::{CmdKind, Message};
 use crate::presets::TEMPS;
 
-/// Render the White tab body.
-pub(crate) fn body<'a>(app: &'a App, d: &'a Device) -> Element<'a, Message> {
-    let bg = app.target_light().is_bg();
+/// Render the White tab body for the given light (`bg` = background).
+pub(crate) fn body<'a>(app: &'a App, d: &'a Device, bg: bool) -> Element<'a, Message> {
     let value = app
         .pickers
         .get(&d.id)

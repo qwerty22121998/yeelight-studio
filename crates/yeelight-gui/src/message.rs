@@ -69,23 +69,6 @@ pub(crate) enum DetailTab {
     Music,
 }
 
-/// Which physical light a control targets.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum Light {
-    /// The main light.
-    #[default]
-    Main,
-    /// The background light.
-    Background,
-}
-
-impl Light {
-    /// `true` for the background light (matches the `bg` flag used by [`Op`]).
-    pub(crate) fn is_bg(self) -> bool {
-        matches!(self, Light::Background)
-    }
-}
-
 /// Which editable field of a custom flow-editor row changed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FlowField {
@@ -181,8 +164,6 @@ pub(crate) enum Message {
     SelectTab(usize),
     /// Switch the active control tab for the selected device.
     SelectDetailTab(DetailTab),
-    /// Choose which light (main/background) controls target.
-    SelectLight(Light),
     /// Begin editing the selected device's name (seeds the buffer).
     RenameStart,
     /// Edit the in-progress rename buffer.

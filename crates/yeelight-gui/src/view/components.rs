@@ -33,19 +33,6 @@ pub(crate) fn chip<'a>(label: &'a str, on: bool, msg: Message) -> Element<'a, Me
         .into()
 }
 
-/// A two-option segmented toggle (e.g. Main | Background, Color | White).
-pub(crate) fn segmented<'a>(
-    left: (&'a str, Message),
-    right: (&'a str, Message),
-    left_active: bool,
-) -> Element<'a, Message> {
-    row![
-        chip(left.0, left_active, left.1),
-        chip(right.0, !left_active, right.1),
-    ]
-    .spacing(4)
-    .into()
-}
 
 /// A horizontal tab strip; `selected == tab` marks the active tab.
 pub(crate) fn tab_strip<'a, T: Copy + PartialEq>(

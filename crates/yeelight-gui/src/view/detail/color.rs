@@ -12,9 +12,8 @@ use crate::message::{Btn, Message};
 /// One-tap common colors shown under the picker.
 const QUICK: &[u32] = &[0xFF0000, 0xFF7F00, 0xFFFF00, 0x00FF00, 0x00FFFF, 0x0000FF, 0xFF00FF, 0xFFFFFF];
 
-/// Render the Color tab body.
-pub(crate) fn body<'a>(app: &'a App, d: &'a Device) -> Element<'a, Message> {
-    let bg = app.target_light().is_bg();
+/// Render the Color tab body for the given light (`bg` = background).
+pub(crate) fn body<'a>(app: &'a App, d: &'a Device, bg: bool) -> Element<'a, Message> {
     let ps = app.pickers.get(&d.id);
     let open = ps.map(|p| if bg { p.bg_open } else { p.main_open }).unwrap_or(false);
     let draft = ps
