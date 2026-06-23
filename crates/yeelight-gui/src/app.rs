@@ -561,8 +561,29 @@ impl App {
         self.theme.clone()
     }
 
-    /// Commit the in-progress device rename (stub; filled in a later task).
-    fn rename_commit(&mut self) -> Task<Message> { Task::none() }
+    /// Which light controls currently target for the selected device.
+    pub(crate) fn target_light(&self) -> crate::message::Light {
+        self.selected_id()
+            .and_then(|id| self.target.get(&id).copied())
+            .unwrap_or_default()
+    }
+
+    /// The active detail tab for the selected device.
+    pub(crate) fn active_tab(&self) -> crate::message::DetailTab {
+        self.selected_id()
+            .and_then(|id| self.tabs.get(&id).copied())
+            .unwrap_or_default()
+    }
+
+    /// Commit the in-progress device rename: mutate local state and send `set_name`.
+    fn rename_commit(&mut self) -> Task<Message> {
+        let Some((id, name)) = self.rename.take() else { return Task::none() };
+        if let Some(d) = self.devices.iter_mut().find(|d| d.id == id) {
+            d.state.name = Some(name.clone());
+        }
+        self.run_selected("name set", move |c| async move { c.set_name(&name).await })
+    }
+
     /// Apply a preset scene by index (stub; filled in a later task).
     fn apply_scene(&mut self, _i: usize) -> Task<Message> { Task::none() }
     /// Apply a preset flow by index (stub; filled in a later task).
@@ -577,12 +598,42 @@ impl App {
     fn tick_timers(&mut self) {}
     /// Toggle music instant-control mode (stub; filled in a later task).
     fn music_toggle(&mut self) -> Task<Message> { Task::none() }
-    /// Run a one-shot async operation against the selected device's client (stub).
-    fn run_selected<F, Fut>(&mut self, _label: &'static str, _f: F) -> Task<Message>
+
+    /// Run a one-shot async operation against the selected device's client.
+    ///
+    /// If a cached client exists it is reused; otherwise a temporary connection is
+    /// opened for the duration of the call.
+    fn run_selected<F, Fut>(&mut self, label: &'static str, f: F) -> Task<Message>
     where
         F: FnOnce(Arc<Client>) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = yeelight_core::Result<()>> + Send + 'static,
-    { Task::none() }
+    {
+        let Some(i) = self.selected else { return Task::none() };
+        let id = self.devices[i].id.clone();
+        if let Some(client) = self.clients.get(&id).cloned() {
+            Task::perform(
+                async move {
+                    f(client).await.map(|()| label.to_string()).map_err(|e| e.to_string())
+                },
+                move |result| Message::CommandDone { key: (id.clone(), false, Btn::Misc), result },
+            )
+        } else {
+            let device = self.devices[i].clone();
+            let force = self.force_all;
+            // ponytail: the freshly connected client is not inserted into self.clients
+            // because we're in an async closure with no access to &mut self. These
+            // one-shot actions are infrequent; color/bright/temp go through dispatch()
+            // which does cache via Message::Connected.
+            Task::perform(
+                async move {
+                    let c = Client::connect(device).await.map(Arc::new).map_err(|e| e.to_string())?;
+                    c.set_force(force);
+                    f(Arc::clone(&c)).await.map(|()| label.to_string()).map_err(|e| e.to_string())
+                },
+                move |result| Message::CommandDone { key: (id.clone(), false, Btn::Misc), result },
+            )
+        }
+    }
 
     /// One live-notification stream per connected device; iced keys them by id and
     /// keeps each running until its client disappears.

@@ -123,6 +123,10 @@ pub(crate) enum Btn {
     Bright,
     /// The color-temperature slider.
     Temp,
+    /// One-shot whole-device actions (rename, save-default, …) that don't gate a
+    /// specific control button. Kept distinct so completing one never clears a
+    /// real per-button in-flight key.
+    Misc,
 }
 
 /// Identity of one in-flight control: `(device id, background?, which button)`.
