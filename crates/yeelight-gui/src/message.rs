@@ -4,16 +4,22 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use iced::Color;
-use yeelight_core::{Client, Device};
+use tokio::sync::Mutex;
+use yeelight_core::{Client, Device, MusicConnection};
 
-/// Which left-sidebar pane is shown.
+/// A shared music channel: `Arc<Mutex<..>>` so it can be cloned into async
+/// streaming tasks while still living in [`crate::app::App`] state.
+/// `MusicConnection::send` takes `&mut self`, so the lock is required.
+pub(crate) type MusicSession = Arc<Mutex<MusicConnection>>;
+
+/// What the detail pane shows: the selected device, or the settings screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum Sidebar {
-    /// Device tabs + controls.
+pub(crate) enum Screen {
+    /// Controls for the selected device.
     #[default]
     Device,
-    /// Settings pane.
-    Setting,
+    /// The settings screen.
+    Settings,
 }
 
 /// Which tab of the settings pane is shown.
@@ -43,6 +49,54 @@ impl std::fmt::Display for ThemePref {
             ThemePref::Fixed(theme) => theme.fmt(f),
         }
     }
+}
+
+/// Which control tab of the detail pane is shown for a device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum DetailTab {
+    /// RGB color wheel + quick swatches.
+    #[default]
+    Color,
+    /// Color-temperature (white) controls.
+    White,
+    /// Preset scenes.
+    Scenes,
+    /// Color-flow presets + custom editor.
+    Flow,
+    /// Sleep timer.
+    Timer,
+    /// Music "instant control" mode.
+    Music,
+}
+
+/// Which physical light a control targets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum Light {
+    /// The main light.
+    #[default]
+    Main,
+    /// The background light.
+    Background,
+}
+
+impl Light {
+    /// `true` for the background light (matches the `bg` flag used by [`Op`]).
+    pub(crate) fn is_bg(self) -> bool {
+        matches!(self, Light::Background)
+    }
+}
+
+/// Which editable field of a custom flow-editor row changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FlowField {
+    /// Duration in ms.
+    Duration,
+    /// Mode: color / temperature / sleep.
+    Mode,
+    /// RGB or CT value.
+    Value,
+    /// Brightness.
+    Bright,
 }
 
 /// A user intent issued from a control widget, before device capabilities resolve it.
@@ -119,10 +173,64 @@ pub(crate) enum Message {
     PortOpened(Result<(), String>),
     /// Quit the application.
     Quit,
-    /// Switch the sidebar pane.
-    SelectSidebar(Sidebar),
+    /// Switch the detail pane between the device screen and settings.
+    SelectScreen(Screen),
     /// Select a device tab by index.
     SelectTab(usize),
+    /// Switch the active control tab for the selected device.
+    SelectDetailTab(DetailTab),
+    /// Choose which light (main/background) controls target.
+    SelectLight(Light),
+    /// Begin editing the selected device's name (seeds the buffer).
+    RenameStart,
+    /// Edit the in-progress rename buffer.
+    RenameEdit(String),
+    /// Commit the rename (`set_name`).
+    RenameCommit,
+    /// Cancel an in-progress rename.
+    RenameCancel,
+    /// Apply a preset scene by index into `presets::SCENES`.
+    ApplyScene(usize),
+    /// Save the current state as the power-on default (`set_default`).
+    SaveDefault,
+    /// Apply a preset color flow by index into `presets::FLOWS`.
+    ApplyFlowPreset(usize),
+    /// Stop any running color flow (`stop_cf`).
+    StopFlow,
+    /// Add an empty row to the custom flow-editor draft.
+    FlowRowAdd,
+    /// Remove flow-editor row `usize`.
+    FlowRowDel(usize),
+    /// Edit a field of flow-editor row `usize`.
+    FlowRowEdit {
+        /// Row index.
+        row: usize,
+        /// Which field changed.
+        field: FlowField,
+        /// New raw string value (parsed on apply).
+        value: String,
+    },
+    /// Change the custom-flow repeat count (raw input string).
+    FlowCountEdit(String),
+    /// Start the custom flow from the current draft (`start_cf`).
+    StartCustomFlow,
+    /// Edit the sleep-timer minutes input (raw string).
+    TimerEdit(String),
+    /// Start the sleep timer (`cron_add`).
+    TimerStart,
+    /// Cancel the sleep timer (`cron_del`).
+    TimerCancel,
+    /// Per-second countdown tick for active timers.
+    TimerTick,
+    /// Toggle music "instant control" mode for the selected device.
+    MusicToggle,
+    /// A music session finished starting (or failed).
+    MusicStarted {
+        /// Device id the session belongs to.
+        id: String,
+        /// The session handle or an error string.
+        session: Result<MusicSession, String>,
+    },
     /// A control was activated for the selected device.
     Command {
         /// Background light?

@@ -11,7 +11,7 @@ use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::{Stream, StreamExt};
 use yeelight_core::{Client, Effect, State, discovery, firewall};
 
-use crate::message::{Btn, CmdKind, Message, Op, OpKey, Sidebar, SettingsTab, ThemePref};
+use crate::message::{Btn, CmdKind, FlowField, Message, Op, OpKey, SettingsTab, ThemePref};
 use crate::view;
 
 /// Transition used for every GUI-issued command.
@@ -44,6 +44,44 @@ impl Default for PickerState {
     }
 }
 
+/// One editable row of the custom flow editor (raw strings until Start).
+#[derive(Clone)]
+pub(crate) struct FlowRow {
+    /// Duration in milliseconds (raw string input).
+    pub(crate) duration: String,
+    /// Flow mode: 1 = color, 2 = CT, 7 = sleep.
+    pub(crate) mode: u8,
+    /// RGB or CT value (raw string input).
+    pub(crate) value: String,
+    /// Brightness percentage (raw string input).
+    pub(crate) bright: String,
+}
+
+impl Default for FlowRow {
+    fn default() -> Self {
+        Self { duration: "1000".into(), mode: 1, value: "16711680".into(), bright: "100".into() }
+    }
+}
+
+impl FlowRow {
+    /// Update one field from a raw input string.
+    pub(crate) fn set(&mut self, field: FlowField, v: String) {
+        match field {
+            FlowField::Duration => self.duration = v,
+            FlowField::Mode => self.mode = v.parse().unwrap_or(self.mode),
+            FlowField::Value => self.value = v,
+            FlowField::Bright => self.bright = v,
+        }
+    }
+}
+
+/// Per-device timer state: remaining whole seconds while a sleep timer runs.
+#[derive(Default, Clone, Copy)]
+pub(crate) struct TimerState {
+    /// Remaining seconds, or `None` if no timer is active.
+    pub(crate) remaining: Option<u32>,
+}
+
 /// Bottom-bar status line.
 #[derive(Default)]
 pub(crate) enum Status {
@@ -58,7 +96,8 @@ pub(crate) enum Status {
 
 /// Root application state.
 pub(crate) struct App {
-    pub(crate) sidebar: Sidebar,
+    /// Device screen vs settings screen.
+    pub(crate) screen: crate::message::Screen,
     pub(crate) devices: Vec<yeelight_core::Device>,
     pub(crate) selected: Option<usize>,
     pub(crate) clients: HashMap<String, Arc<Client>>,
@@ -81,12 +120,28 @@ pub(crate) struct App {
     pub(crate) inflight: HashSet<OpKey>,
     /// The discovery port is known-open (from the startup check or after opening it).
     pub(crate) port_open: bool,
+    /// Active control tab per device id.
+    pub(crate) tabs: HashMap<String, crate::message::DetailTab>,
+    /// Which light (main/bg) controls target, per device id.
+    pub(crate) target: HashMap<String, crate::message::Light>,
+    /// In-progress rename buffer (device id, new name), if editing.
+    pub(crate) rename: Option<(String, String)>,
+    /// Custom flow-editor draft rows per device id.
+    pub(crate) flow_rows: HashMap<String, Vec<FlowRow>>,
+    /// Custom flow repeat-count input per device id (raw string).
+    pub(crate) flow_count: HashMap<String, String>,
+    /// Sleep-timer minutes input per device id (raw string).
+    pub(crate) timer_input: HashMap<String, String>,
+    /// Active timer state per device id.
+    pub(crate) timers: HashMap<String, TimerState>,
+    /// Active music sessions per device id (instant-control mode).
+    pub(crate) music: HashMap<String, crate::message::MusicSession>,
 }
 
 impl Default for App {
     fn default() -> Self {
         Self {
-            sidebar: Sidebar::default(),
+            screen: crate::message::Screen::default(),
             devices: Vec::new(),
             selected: None,
             clients: HashMap::new(),
@@ -101,6 +156,14 @@ impl Default for App {
             scan_progress: 0.0,
             inflight: HashSet::new(),
             port_open: false,
+            tabs: HashMap::new(),
+            target: HashMap::new(),
+            rename: None,
+            flow_rows: HashMap::new(),
+            flow_count: HashMap::new(),
+            timer_input: HashMap::new(),
+            timers: HashMap::new(),
+            music: HashMap::new(),
         }
     }
 }
@@ -295,13 +358,80 @@ impl App {
                 Task::none()
             }
             Message::Quit => iced::exit(),
-            Message::SelectSidebar(s) => {
-                self.sidebar = s;
-                Task::none()
-            }
+            Message::SelectScreen(s) => { self.screen = s; Task::none() }
             Message::SelectTab(i) => {
                 if i < self.devices.len() {
                     self.selected = Some(i);
+                }
+                Task::none()
+            }
+            Message::SelectDetailTab(t) => {
+                if let Some(id) = self.selected_id() { self.tabs.insert(id, t); }
+                Task::none()
+            }
+            Message::SelectLight(l) => {
+                if let Some(id) = self.selected_id() { self.target.insert(id, l); }
+                Task::none()
+            }
+            Message::RenameStart => {
+                if let Some(d) = self.selected.and_then(|i| self.devices.get(i)) {
+                    let name = d.state.name.clone().filter(|n| !n.is_empty())
+                        .unwrap_or_else(|| d.model.clone().into());
+                    self.rename = Some((d.id.clone(), name));
+                }
+                Task::none()
+            }
+            Message::RenameEdit(s) => {
+                if let Some((_, buf)) = &mut self.rename { *buf = s; }
+                Task::none()
+            }
+            Message::RenameCancel => { self.rename = None; Task::none() }
+            Message::RenameCommit => self.rename_commit(),
+            Message::ApplyScene(i) => self.apply_scene(i),
+            Message::SaveDefault => self.run_selected("set_default", |c| async move { c.set_default().await }),
+            Message::StopFlow => self.run_selected("stop_cf", |c| async move { c.stop_cf().await }),
+            Message::ApplyFlowPreset(i) => self.apply_flow_preset(i),
+            Message::FlowRowAdd => {
+                if let Some(id) = self.selected_id() {
+                    self.flow_rows.entry(id).or_default().push(FlowRow::default());
+                }
+                Task::none()
+            }
+            Message::FlowRowDel(row) => {
+                if let Some(id) = self.selected_id()
+                    && let Some(rows) = self.flow_rows.get_mut(&id)
+                    && row < rows.len()
+                {
+                    rows.remove(row);
+                }
+                Task::none()
+            }
+            Message::FlowRowEdit { row, field, value } => {
+                if let Some(id) = self.selected_id()
+                    && let Some(rows) = self.flow_rows.get_mut(&id)
+                    && let Some(r) = rows.get_mut(row)
+                {
+                    r.set(field, value);
+                }
+                Task::none()
+            }
+            Message::FlowCountEdit(s) => {
+                if let Some(id) = self.selected_id() { self.flow_count.insert(id, s); }
+                Task::none()
+            }
+            Message::StartCustomFlow => self.start_custom_flow(),
+            Message::TimerEdit(s) => {
+                if let Some(id) = self.selected_id() { self.timer_input.insert(id, s); }
+                Task::none()
+            }
+            Message::TimerStart => self.timer_start(),
+            Message::TimerCancel => self.timer_cancel(),
+            Message::TimerTick => { self.tick_timers(); Task::none() }
+            Message::MusicToggle => self.music_toggle(),
+            Message::MusicStarted { id, session } => {
+                match session {
+                    Ok(s) => { self.music.insert(id, s); self.status = Status::Ok("instant mode on".into()); }
+                    Err(e) => self.status = Status::Err(e),
                 }
                 Task::none()
             }
@@ -429,6 +559,29 @@ impl App {
     pub(crate) fn theme(&self) -> iced::Theme {
         self.theme.clone()
     }
+
+    /// Commit the in-progress device rename (stub; filled in a later task).
+    fn rename_commit(&mut self) -> Task<Message> { Task::none() }
+    /// Apply a preset scene by index (stub; filled in a later task).
+    fn apply_scene(&mut self, _i: usize) -> Task<Message> { Task::none() }
+    /// Apply a preset flow by index (stub; filled in a later task).
+    fn apply_flow_preset(&mut self, _i: usize) -> Task<Message> { Task::none() }
+    /// Start the custom flow from the editor draft (stub; filled in a later task).
+    fn start_custom_flow(&mut self) -> Task<Message> { Task::none() }
+    /// Start the sleep timer (stub; filled in a later task).
+    fn timer_start(&mut self) -> Task<Message> { Task::none() }
+    /// Cancel the sleep timer (stub; filled in a later task).
+    fn timer_cancel(&mut self) -> Task<Message> { Task::none() }
+    /// Advance all active timers by one second (stub; filled in a later task).
+    fn tick_timers(&mut self) {}
+    /// Toggle music instant-control mode (stub; filled in a later task).
+    fn music_toggle(&mut self) -> Task<Message> { Task::none() }
+    /// Run a one-shot async operation against the selected device's client (stub).
+    fn run_selected<F, Fut>(&mut self, _label: &'static str, _f: F) -> Task<Message>
+    where
+        F: FnOnce(Arc<Client>) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = yeelight_core::Result<()>> + Send + 'static,
+    { Task::none() }
 
     /// One live-notification stream per connected device; iced keys them by id and
     /// keeps each running until its client disappears.

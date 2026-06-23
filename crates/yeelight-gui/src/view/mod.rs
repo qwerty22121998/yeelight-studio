@@ -8,13 +8,13 @@ use iced::widget::{button, column, container, progress_bar, row, text, Space};
 use iced::{Element, Length::Fill};
 
 use crate::app::{App, Status};
-use crate::message::{Message, Sidebar};
+use crate::message::{Message, Screen};
 
 /// The whole window: sidebar + content over a bottom action bar.
 pub(crate) fn root(app: &App) -> Element<'_, Message> {
-    let content = match app.sidebar {
-        Sidebar::Device => device::pane(app),
-        Sidebar::Setting => settings::pane(app),
+    let content = match app.screen {
+        Screen::Device => device::pane(app),
+        Screen::Settings => settings::pane(app),
     };
 
     let body = row![sidebar::view(app), content].height(Fill);

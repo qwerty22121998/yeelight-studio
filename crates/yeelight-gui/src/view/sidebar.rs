@@ -1,24 +1,24 @@
-//! Left sidebar: switch between the Device and Setting panes.
+//! Left sidebar: switch between the Device and Settings screens.
 
 use iced::widget::{button, column, container, text};
 use iced::{Element, Length::Fill};
 
 use crate::app::App;
-use crate::message::{Message, Sidebar};
+use crate::message::{Message, Screen};
 
-/// Render the sidebar with the active pane marked.
+/// Render the sidebar with the active screen marked.
 pub(crate) fn view(app: &App) -> Element<'_, Message> {
-    let item = |label: &str, target: Sidebar| {
-        let marker = if app.sidebar == target { "▶ " } else { "  " };
+    let item = |label: &str, target: Screen| {
+        let marker = if app.screen == target { "▶ " } else { "  " };
         button(text(format!("{marker}{label}")))
-            .on_press(Message::SelectSidebar(target))
+            .on_press(Message::SelectScreen(target))
             .width(Fill)
     };
 
     container(
         column![
-            item("Device", Sidebar::Device),
-            item("Setting", Sidebar::Setting),
+            item("Device", Screen::Device),
+            item("Settings", Screen::Settings),
         ]
         .spacing(6),
     )
