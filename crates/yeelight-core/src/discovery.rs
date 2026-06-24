@@ -142,7 +142,8 @@ fn parse_headers(text: &str) -> Option<Device> {
 
 fn parse_state(h: &HashMap<String, String>) -> State {
     State {
-        power: h.get("power").map(|p| p == "on"),
+        // Multi-light devices report `main_power`; single-light `power`.
+        power: h.get("power").or_else(|| h.get("main_power")).map(|p| p == "on"),
         bright: h.get("bright").and_then(|s| s.parse().ok()),
         color_mode: h.get("color_mode").and_then(|s| s.parse().ok()),
         ct: h.get("ct").and_then(|s| s.parse().ok()),
@@ -150,6 +151,13 @@ fn parse_state(h: &HashMap<String, String>) -> State {
         hue: h.get("hue").and_then(|s| s.parse().ok()),
         sat: h.get("sat").and_then(|s| s.parse().ok()),
         name: h.get("name").cloned(),
+        bg_power: h.get("bg_power").map(|p| p == "on"),
+        bg_bright: h.get("bg_bright").and_then(|s| s.parse().ok()),
+        bg_color_mode: h.get("bg_lmode").and_then(|s| s.parse().ok()),
+        bg_ct: h.get("bg_ct").and_then(|s| s.parse().ok()),
+        bg_rgb: h.get("bg_rgb").and_then(|s| s.parse().ok()),
+        bg_hue: h.get("bg_hue").and_then(|s| s.parse().ok()),
+        bg_sat: h.get("bg_sat").and_then(|s| s.parse().ok()),
     }
 }
 

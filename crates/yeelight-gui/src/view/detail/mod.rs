@@ -4,6 +4,7 @@
 
 pub(crate) mod color;
 pub(crate) mod flow;
+pub(crate) mod light;
 pub(crate) mod music;
 pub(crate) mod scenes;
 pub(crate) mod timer;
@@ -14,18 +15,52 @@ use iced::{Border, Color, Element, Length::Fill, Theme};
 use yeelight_core::Device;
 
 use super::components::{swatch, tab_strip};
-use crate::app::{u32_to_color, App};
+use crate::app::App;
 use crate::message::{CmdKind, DetailTab, Message};
 
-/// Tabs shown for the main light.
+/// Control tabs in display order. Each shows only for a light that advertises
+/// the matching method (see [`tab_supported`]) or when force-all is on.
 const TABS: &[(&str, DetailTab)] = &[
-    ("Color", DetailTab::Color),
-    ("White", DetailTab::White),
+    ("Light", DetailTab::Light),
     ("Scenes", DetailTab::Scenes),
     ("Flow", DetailTab::Flow),
     ("Timer", DetailTab::Timer),
     ("\u{26a1} Music", DetailTab::Music),
 ];
+
+/// Whether a control gated by `method` should be shown: the device advertises
+/// it, or the user forced every control on.
+pub(crate) fn enabled(app: &App, d: &Device, method: &str) -> bool {
+    app.force_all || d.supports(method)
+}
+
+/// The `(rgb, ct)` color modes a light supports — gates which scenes/flows fit
+/// (a temp-only light must not offer rgb presets, and vice-versa).
+pub(crate) fn color_modes(app: &App, d: &Device, bg: bool) -> (bool, bool) {
+    (
+        enabled(app, d, if bg { "bg_set_rgb" } else { "set_rgb" }),
+        enabled(app, d, if bg { "bg_set_ct_abx" } else { "set_ct_abx" }),
+    )
+}
+
+/// Whether a light supporting `(rgb, ct)` can run a preset that needs `(rgb, ct)`.
+pub(crate) fn fits((has_rgb, has_ct): (bool, bool), (needs_rgb, needs_ct): (bool, bool)) -> bool {
+    (has_rgb || !needs_rgb) && (has_ct || !needs_ct)
+}
+
+/// Whether a tab is usable for the given light. Each feature maps to the method
+/// the bulb must advertise — the `bg_*` twin for the background light. Timer
+/// (`cron`) and Music have no background twin, so they are main-light only.
+fn tab_supported(app: &App, d: &Device, tab: DetailTab, bg: bool) -> bool {
+    let has = |main: &str, bgm: &str| enabled(app, d, if bg { bgm } else { main });
+    match tab {
+        DetailTab::Light => has("set_rgb", "bg_set_rgb") || has("set_ct_abx", "bg_set_ct_abx"),
+        DetailTab::Scenes => has("set_scene", "bg_set_scene"),
+        DetailTab::Flow => has("start_cf", "bg_start_cf"),
+        DetailTab::Timer => !bg && enabled(app, d, "cron_add"),
+        DetailTab::Music => !bg && enabled(app, d, "set_music"),
+    }
+}
 
 /// Render the detail pane for the selected device.
 pub(crate) fn pane(app: &App) -> Element<'_, Message> {
@@ -44,9 +79,9 @@ pub(crate) fn pane(app: &App) -> Element<'_, Message> {
             .into();
     };
 
-    let mut col = column![header(app, d), main_section(app, d)].spacing(16);
+    let mut col = column![header(app, d), light_section(app, d, false)].spacing(16);
     if bg_supported(app, d) {
-        col = col.push(bg_section(app, d));
+        col = col.push(light_section(app, d, true));
     }
 
     container(scrollable(col))
@@ -59,9 +94,12 @@ pub(crate) fn pane(app: &App) -> Element<'_, Message> {
 /// Whether this device advertises any background-light method (or force-all is on).
 fn bg_supported(app: &App, d: &Device) -> bool {
     app.force_all
-        || ["bg_set_power", "bg_toggle", "bg_set_rgb", "bg_set_bright", "bg_set_ct_abx"]
-            .iter()
-            .any(|m| d.supports(m))
+        || [
+            "bg_set_power", "bg_toggle", "bg_set_rgb", "bg_set_bright", "bg_set_ct_abx",
+            "bg_set_scene", "bg_start_cf",
+        ]
+        .iter()
+        .any(|m| d.supports(m))
 }
 
 /// Device header: editable name, subtitle, and save-as-default.
@@ -96,9 +134,14 @@ fn header<'a>(app: &'a App, d: &'a Device) -> Element<'a, Message> {
         if online { "online" } else { "offline" }
     );
 
-    let save = button(text("Save as default"))
-        .style(button::text)
-        .on_press(Message::SaveDefault);
+    let save: Element<'a, Message> = if enabled(app, d, "set_default") {
+        button(text("Save as default"))
+            .style(button::text)
+            .on_press(Message::SaveDefault)
+            .into()
+    } else {
+        Space::new().into()
+    };
 
     row![
         column![name, text(sub).size(12).color(Color::from_rgb(0.55, 0.58, 0.63))].spacing(2),
@@ -110,58 +153,65 @@ fn header<'a>(app: &'a App, d: &'a Device) -> Element<'a, Message> {
     .into()
 }
 
-/// Main light: power (reflects live state) + brightness + the full tab surface.
-fn main_section<'a>(app: &'a App, d: &'a Device) -> Element<'a, Message> {
-    let on = d.state.power.unwrap_or(false);
-    let power = button(text(if on { "\u{23fb} On" } else { "\u{23fc} Off" }))
-        .style(if on { button::primary } else { button::secondary })
-        .on_press(Message::Command { bg: false, kind: CmdKind::Toggle });
-
-    let preview = d.state.rgb.map(u32_to_color).unwrap_or(Color::from_rgb(0.85, 0.8, 0.6));
-    let tab = app.active_tab();
-    let body: Element<'a, Message> = match tab {
-        DetailTab::Color => color::body(app, d, false),
-        DetailTab::White => white::body(app, d, false),
-        DetailTab::Scenes => scenes::body(app, d),
-        DetailTab::Flow => flow::body(app, d),
-        DetailTab::Timer => timer::body(app, d),
-        DetailTab::Music => music::body(app, d),
+/// One light's controls — main or background, treated as peers: power, brightness,
+/// and the tabs that light supports (`bg_*` methods gate the background light). The
+/// device's reported power state was unreliable, so power is a plain toggle.
+fn light_section<'a>(app: &'a App, d: &'a Device, bg: bool) -> Element<'a, Message> {
+    let (title, toggle_m, power_m, bright_m) = if bg {
+        ("Background light", "bg_toggle", "bg_set_power", "bg_set_bright")
+    } else {
+        ("Main light", "toggle", "set_power", "set_bright")
     };
 
-    section_box(column![
-        heading("Main light", power),
-        row![swatch(preview, 48.0), brightness(app, d, false)].spacing(12).align_y(iced::Center),
-        tab_strip(TABS, tab, Message::SelectDetailTab),
-        body,
-    ]
-    .spacing(12))
+    let power: Element<'a, Message> = if enabled(app, d, toggle_m) || enabled(app, d, power_m) {
+        button(text("\u{23fb} Toggle"))
+            .style(button::secondary)
+            .on_press(Message::Command { bg, kind: CmdKind::Toggle })
+            .into()
+    } else {
+        Space::new().into()
+    };
+
+    let mut col = column![heading(title, power)].spacing(12);
+
+    if enabled(app, d, bright_m) {
+        let preview = light::preview(app, d, bg);
+        col = col
+            .push(row![swatch(preview, 48.0), brightness(app, d, bg)].spacing(12).align_y(iced::Center));
+    }
+
+    // Only the tabs this light supports (or all, when forced).
+    let tabs: Vec<(&str, DetailTab)> = TABS
+        .iter()
+        .filter(|(_, t)| tab_supported(app, d, *t, bg))
+        .map(|(label, tab)| (*label, *tab))
+        .collect();
+    if let Some(&(_, first)) = tabs.first() {
+        // Keep the user's tab if still supported, else fall back to the first.
+        let active = if tabs.iter().any(|(_, t)| *t == app.active_tab(bg)) {
+            app.active_tab(bg)
+        } else {
+            first
+        };
+        let body: Element<'a, Message> = match active {
+            DetailTab::Light => light::body(app, d, bg),
+            DetailTab::Scenes => scenes::body(app, d, bg),
+            DetailTab::Flow => flow::body(app, d, bg),
+            DetailTab::Timer => timer::body(app, d),
+            DetailTab::Music => music::body(app, d),
+        };
+        col = col
+            .push(tab_strip(&tabs, active, move |tab| Message::SelectDetailTab { bg, tab }))
+            .push(body);
+    }
+
+    section_box(col)
 }
 
-/// Background light: its own power + brightness + color/white. No live power
-/// state exists for the background light, so its button is a plain toggle.
-fn bg_section<'a>(app: &'a App, d: &'a Device) -> Element<'a, Message> {
-    let power = button(text("\u{23fb} Toggle"))
-        .style(button::secondary)
-        .on_press(Message::Command { bg: true, kind: CmdKind::Toggle });
-
-    let preview = app
-        .pickers
-        .get(&d.id)
-        .map(|p| p.bg_draft)
-        .unwrap_or(Color::from_rgb(0.85, 0.8, 0.6));
-
-    section_box(column![
-        heading("Background light", power),
-        row![swatch(preview, 48.0), brightness(app, d, true)].spacing(12).align_y(iced::Center),
-        white::body(app, d, true),
-        color::body(app, d, true),
-    ]
-    .spacing(12))
-}
-
-/// A section title with a power control pinned to the right.
-fn heading<'a>(title: &'a str, power: iced::widget::Button<'a, Message>) -> Element<'a, Message> {
-    row![text(title).size(16), Space::new().width(Fill), power]
+/// A section title with a control pinned to the right (power button, or empty
+/// when the light advertises no power method).
+fn heading<'a>(title: &'a str, right: Element<'a, Message>) -> Element<'a, Message> {
+    row![text(title).size(16), Space::new().width(Fill), right]
         .spacing(10)
         .align_y(iced::Center)
         .into()

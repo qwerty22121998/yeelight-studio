@@ -76,6 +76,37 @@ fn party_flow() -> FlowExpr {
     ])
 }
 
+impl ScenePreset {
+    /// Color modes `(rgb, ct)` the light must support to run this scene.
+    pub(crate) fn needs(&self) -> (bool, bool) {
+        scene_needs(&(self.make)())
+    }
+}
+
+impl FlowPreset {
+    /// Color modes `(rgb, ct)` the light must support to run this flow.
+    pub(crate) fn needs(&self) -> (bool, bool) {
+        flow_needs(&(self.make)())
+    }
+}
+
+/// `(rgb, ct)` color modes a flow exercises: color steps (mode 1) need rgb, CT
+/// steps (mode 2) need ct; sleep steps (mode 7) need neither.
+fn flow_needs(e: &FlowExpr) -> (bool, bool) {
+    (e.0.iter().any(|t| t.mode == 1), e.0.iter().any(|t| t.mode == 2))
+}
+
+/// `(rgb, ct)` color modes a scene needs the light to support.
+fn scene_needs(s: &Scene) -> (bool, bool) {
+    match s {
+        Scene::Color { .. } | Scene::Hsv { .. } => (true, false),
+        Scene::Ct { .. } => (false, true),
+        Scene::ColorFlow { expr, .. } => flow_needs(expr),
+        // Pure brightness/timer scene — runs on any light.
+        Scene::AutoDelayOff { .. } => (false, false),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -94,6 +125,20 @@ mod tests {
         for p in FLOWS {
             assert!((p.make)().render().is_ok(), "flow preset {} renders invalid", p.name);
         }
+    }
+
+    #[test]
+    fn needs_matches_preset_modes() {
+        // CT-only scenes need ct not rgb; color scenes the reverse.
+        let needs = |n: &str| SCENES.iter().find(|s| s.name == n).unwrap().needs();
+        assert_eq!(needs("Reading"), (false, true)); // Ct scene
+        assert_eq!(needs("Sunset"), (true, false)); // Color scene
+        assert_eq!(needs("Party"), (true, false)); // color flow
+        // Sunrise mixes a color step and CT steps → needs both.
+        let sunrise = FLOWS.iter().find(|f| f.name == "Sunrise").unwrap().needs();
+        assert_eq!(sunrise, (true, true));
+        let candle = FLOWS.iter().find(|f| f.name == "Candle").unwrap().needs();
+        assert_eq!(candle, (false, true)); // all CT steps
     }
 
     #[test]

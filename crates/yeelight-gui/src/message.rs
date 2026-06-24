@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use iced::Color;
 use tokio::sync::Mutex;
-use yeelight_core::{Client, Device, MusicConnection};
+use yeelight_core::{Client, Device, Direction, MusicConnection};
 
 /// A shared music channel: `Arc<Mutex<..>>` so it can be cloned into async
 /// streaming tasks while still living in [`crate::app::App`] state.
@@ -20,6 +20,8 @@ pub(crate) enum Screen {
     Device,
     /// The settings screen.
     Settings,
+    /// The command-log screen.
+    Logging,
 }
 
 /// Which tab of the settings pane is shown.
@@ -54,11 +56,10 @@ impl std::fmt::Display for ThemePref {
 /// Which control tab of the detail pane is shown for a device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum DetailTab {
-    /// RGB color wheel + quick swatches.
+    /// Color/temperature controls — the light is in one mode at a time, picked
+    /// by a Color|Temperature segment.
     #[default]
-    Color,
-    /// Color-temperature (white) controls.
-    White,
+    Light,
     /// Preset scenes.
     Scenes,
     /// Color-flow presets + custom editor.
@@ -152,8 +153,6 @@ pub(crate) enum Message {
     Scan,
     /// Scan finished (devices or an error string).
     Scanned(Result<Vec<Device>, String>),
-    /// Startup firewall check: is the discovery port already open?
-    PortChecked(Result<bool, String>),
     /// Native open-port permission popup was answered (`true` = open it).
     PortPromptAnswered(bool),
     /// The sudo open-port attempt finished.
@@ -162,8 +161,20 @@ pub(crate) enum Message {
     SelectScreen(Screen),
     /// Select a device tab by index.
     SelectTab(usize),
-    /// Switch the active control tab for the selected device.
-    SelectDetailTab(DetailTab),
+    /// Switch the active control tab for one light of the selected device.
+    SelectDetailTab {
+        /// Background light if true, else main.
+        bg: bool,
+        /// The tab to show.
+        tab: DetailTab,
+    },
+    /// Pick the Light tab's segment: `temp` = color-temperature, else color.
+    SetLightSeg {
+        /// Background light if true, else main.
+        bg: bool,
+        /// Show the temperature segment if true, else the color segment.
+        temp: bool,
+    },
     /// Begin editing the selected device's name (seeds the buffer).
     RenameStart,
     /// Edit the in-progress rename buffer.
@@ -173,19 +184,42 @@ pub(crate) enum Message {
     /// Cancel an in-progress rename.
     RenameCancel,
     /// Apply a preset scene by index into `presets::SCENES`.
-    ApplyScene(usize),
+    ApplyScene {
+        /// Background light?
+        bg: bool,
+        /// Index into `presets::SCENES`.
+        index: usize,
+    },
     /// Save the current state as the power-on default (`set_default`).
     SaveDefault,
     /// Apply a preset color flow by index into `presets::FLOWS`.
-    ApplyFlowPreset(usize),
+    ApplyFlowPreset {
+        /// Background light?
+        bg: bool,
+        /// Index into `presets::FLOWS`.
+        index: usize,
+    },
     /// Stop any running color flow (`stop_cf`).
-    StopFlow,
+    StopFlow {
+        /// Background light?
+        bg: bool,
+    },
     /// Add an empty row to the custom flow-editor draft.
-    FlowRowAdd,
-    /// Remove flow-editor row `usize`.
-    FlowRowDel(usize),
-    /// Edit a field of flow-editor row `usize`.
+    FlowRowAdd {
+        /// Background light?
+        bg: bool,
+    },
+    /// Remove flow-editor row `row`.
+    FlowRowDel {
+        /// Background light?
+        bg: bool,
+        /// Row index.
+        row: usize,
+    },
+    /// Edit a field of flow-editor row `row`.
     FlowRowEdit {
+        /// Background light?
+        bg: bool,
         /// Row index.
         row: usize,
         /// Which field changed.
@@ -194,9 +228,17 @@ pub(crate) enum Message {
         value: String,
     },
     /// Change the custom-flow repeat count (raw input string).
-    FlowCountEdit(String),
+    FlowCountEdit {
+        /// Background light?
+        bg: bool,
+        /// Raw count input.
+        value: String,
+    },
     /// Start the custom flow from the current draft (`start_cf`).
-    StartCustomFlow,
+    StartCustomFlow {
+        /// Background light?
+        bg: bool,
+    },
     /// Edit the sleep-timer minutes input (raw string).
     TimerEdit(String),
     /// Start the sleep timer (`cron_add`).
@@ -220,6 +262,14 @@ pub(crate) enum Message {
         bg: bool,
         /// What the control wants.
         kind: CmdKind,
+    },
+    /// A post-scan connect resolved: cache the client (if it succeeded) so its
+    /// notification stream starts. No command to run — listening only.
+    Listening {
+        /// Device id this connection belongs to.
+        id: String,
+        /// The connected client or an error (offline devices are skipped).
+        client: Result<Arc<Client>, String>,
     },
     /// A lazy connection attempt resolved; run `op` if it succeeded.
     Connected {
@@ -285,4 +335,21 @@ pub(crate) enum Message {
         /// Property name → value (all strings, per spec).
         params: HashMap<String, String>,
     },
+    /// A raw wire line was captured (sent or received) for a connected device.
+    Logged {
+        /// Device id the line belongs to.
+        id: String,
+        /// Sent or received.
+        direction: Direction,
+        /// The raw JSON line.
+        line: String,
+    },
+    /// Clear the in-memory command log (the on-disk file is kept).
+    LogClear,
+    /// Pause or resume command-log capture (screen and file).
+    LogTogglePause,
+    /// Open the on-disk command log in the desktop's default application.
+    LogOpenFile,
+    /// Filter the log view to one device id, or `None` to show all.
+    LogFilterDevice(Option<String>),
 }

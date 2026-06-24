@@ -64,7 +64,18 @@ pub(crate) fn parse_line(line: &str) -> Result<Incoming> {
             .and_then(Value::as_object)
             .map(|o| {
                 o.iter()
-                    .map(|(k, val)| (k.clone(), val.as_str().unwrap_or_default().to_string()))
+                    // Spec §4.3 says values are strings, but real firmware sends
+                    // numbers (`{"bright":83}`). Coerce any scalar to its string
+                    // form so downstream `parse()` works; `as_str()` alone drops
+                    // numbers to "".
+                    .map(|(k, val)| {
+                        let s = match val {
+                            Value::String(s) => s.clone(),
+                            Value::Null => String::new(),
+                            other => other.to_string(),
+                        };
+                        (k.clone(), s)
+                    })
                     .collect()
             })
             .unwrap_or_default();
@@ -125,6 +136,21 @@ mod tests {
             Incoming::Notification(n) => {
                 assert_eq!(n.params.get("power").map(String::as_str), Some("on"));
                 assert_eq!(n.params.get("bright").map(String::as_str), Some("10"));
+            }
+            other => panic!("expected notification, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_numeric_notification_values() {
+        // Real devices send prop values as JSON numbers, not strings (spec §4.3
+        // says strings, but firmware sends `{"bright":83}`). They must coerce to
+        // the digit string so downstream `parse()` works — not the empty string.
+        let m = parse_line(r#"{"method":"props","params":{"bright":83,"rgb":16711680}}"#).unwrap();
+        match m {
+            Incoming::Notification(n) => {
+                assert_eq!(n.params.get("bright").map(String::as_str), Some("83"));
+                assert_eq!(n.params.get("rgb").map(String::as_str), Some("16711680"));
             }
             other => panic!("expected notification, got {other:?}"),
         }

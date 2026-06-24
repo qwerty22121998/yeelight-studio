@@ -20,6 +20,27 @@ use crate::message::{Command, Incoming, Notification, parse_line};
 type ReplyTx = oneshot::Sender<std::result::Result<Value, (i64, String)>>;
 type Pending = Arc<Mutex<HashMap<u64, ReplyTx>>>;
 
+/// Direction of a logged wire line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    /// Sent from this client to the device.
+    Sent,
+    /// Received from the device (a result, error, or notification).
+    Received,
+}
+
+/// One raw wire line (trailing CRLF stripped), logged as sent or received.
+///
+/// Emitted on the channel returned by [`Client::logs`] for every command sent and
+/// every line received — the human-readable JSON traffic, useful for a log view.
+#[derive(Debug, Clone)]
+pub struct LogLine {
+    /// Whether the line was sent or received.
+    pub direction: Direction,
+    /// The raw JSON line.
+    pub line: String,
+}
+
 /// A control connection to a single device.
 ///
 /// One connection multiplexes synchronous command/result pairs and the device's
@@ -33,6 +54,7 @@ pub struct Client {
     next_id: AtomicU64,
     pending: Pending,
     notifications: broadcast::Sender<Notification>,
+    log_tx: broadcast::Sender<LogLine>,
     local_addr: SocketAddr,
     /// When set, [`Client::call_supported`] skips the local `support`-set check.
     force: AtomicBool,
@@ -53,9 +75,11 @@ impl Client {
 
         let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
         let (tx, _rx) = broadcast::channel(64);
+        let (log_tx, _log_rx) = broadcast::channel(256);
 
         let pending_r = pending.clone();
         let tx_r = tx.clone();
+        let log_tx_r = log_tx.clone();
         tokio::spawn(async move {
             let mut lines = BufReader::new(read).lines();
             while let Ok(Some(line)) = lines.next_line().await {
@@ -63,6 +87,10 @@ impl Client {
                     continue;
                 }
                 tracing::trace!(%line, "recv");
+                let _ = log_tx_r.send(LogLine {
+                    direction: Direction::Received,
+                    line: line.clone(),
+                });
                 match parse_line(&line) {
                     Ok(Incoming::Result { id, result }) => {
                         if let Some(s) = pending_r.lock().await.remove(&id) {
@@ -91,6 +119,7 @@ impl Client {
             next_id: AtomicU64::new(1),
             pending,
             notifications: tx,
+            log_tx,
             local_addr,
             force: AtomicBool::new(false),
         })
@@ -115,6 +144,10 @@ impl Client {
 
         tracing::debug!(id, method, "sending command");
         tracing::trace!(line = %line.trim_end(), "send");
+        let _ = self.log_tx.send(LogLine {
+            direction: Direction::Sent,
+            line: line.trim_end().to_string(),
+        });
         {
             let mut w = self.writer.lock().await;
             w.write_all(line.as_bytes()).await?;
@@ -157,6 +190,14 @@ impl Client {
     /// Subscribe to the stream of state-change notifications (spec §4.3).
     pub fn notifications(&self) -> broadcast::Receiver<Notification> {
         self.notifications.subscribe()
+    }
+
+    /// Subscribe to the raw wire log: every command sent and every line received.
+    ///
+    /// Late subscribers miss lines sent before they subscribed (a plain broadcast,
+    /// not a replay buffer). Lines are the JSON exactly as it goes over the socket.
+    pub fn logs(&self) -> broadcast::Receiver<LogLine> {
+        self.log_tx.subscribe()
     }
 
     /// The device this client controls.

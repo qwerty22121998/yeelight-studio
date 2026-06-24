@@ -51,6 +51,16 @@ pub async fn ensure_tcp_open_pkexec(port: u16) -> Result<()> {
 /// pre-check is needed. A dismissed or denied prompt surfaces as [`Error::Firewall`]
 /// carrying the manual command.
 async fn pkexec_allow(rule: &str) -> Result<()> {
+    // ufw/pkexec are Linux-only. On macOS/Windows the OS firewall is the user's to
+    // manage; skip silently rather than surfacing a spurious "pkexec not found".
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = rule;
+        tracing::info!("non-Linux platform; skipping ufw firewall step");
+        return Ok(());
+    }
+    #[cfg(target_os = "linux")]
+    {
     tracing::info!("opening firewall: pkexec ufw allow {rule} (graphical password prompt)");
     let status = match Command::new("pkexec")
         .arg("ufw")
@@ -77,6 +87,7 @@ async fn pkexec_allow(rule: &str) -> Result<()> {
         )));
     }
     Ok(())
+    }
 }
 
 async fn ensure_open(port: u16, proto: &str) -> Result<()> {

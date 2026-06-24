@@ -2,6 +2,7 @@
 
 pub(crate) mod components;
 pub(crate) mod detail;
+pub(crate) mod logging;
 pub(crate) mod rail;
 pub(crate) mod settings;
 
@@ -16,6 +17,7 @@ pub(crate) fn root(app: &App) -> Element<'_, Message> {
     let content = match app.screen {
         Screen::Device => detail::pane(app),
         Screen::Settings => settings::pane(app),
+        Screen::Logging => logging::pane(app),
     };
     let body = row![rail::view(app), content].height(Fill);
     column![body, status_bar(app)].into()

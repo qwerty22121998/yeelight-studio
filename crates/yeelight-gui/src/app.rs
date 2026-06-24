@@ -1,18 +1,20 @@
 //! Application state, the update loop, and the async command plumbing.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::fs::File;
 use std::hash::{Hash, Hasher};
+use std::io::Write;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime};
 
 use iced::{Color, Element, Subscription, Task};
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::{Stream, StreamExt};
 use serde_json::{Value, json};
 use yeelight_core::{
-    Client, CronType, DEFAULT_MUSIC_PORT, Effect, FlowAction, FlowExpr, FlowTuple, MusicConnection,
-    State, discovery, firewall,
+    Client, CronType, DEFAULT_MUSIC_PORT, Direction, Effect, FlowAction, FlowExpr, FlowTuple,
+    MusicConnection, State, discovery, firewall,
 };
 
 use crate::message::{Btn, CmdKind, FlowField, Message, Op, OpKey, SettingsTab, ThemePref};
@@ -20,6 +22,27 @@ use crate::view;
 
 /// Transition used for every GUI-issued command.
 pub(crate) const EFFECT: Effect = Effect::Smooth(500);
+
+/// After a local interaction, ignore device notifications for this long before
+/// reconciling the controls — so a drag (or the device echoing our own command)
+/// can't yank the sliders out from under the user.
+const SYNC_DEBOUNCE: Duration = Duration::from_millis(1000);
+
+/// Cap on in-memory command-log entries kept for the logging screen (the on-disk
+/// file is unbounded). Oldest entries are dropped past this.
+const LOG_CAP: usize = 500;
+
+/// One captured wire line for the command-log screen.
+pub(crate) struct LogEntry {
+    /// When it was captured (used for the on-screen timestamp).
+    pub(crate) time: SystemTime,
+    /// Device id the line belongs to.
+    pub(crate) device: String,
+    /// Sent or received.
+    pub(crate) direction: Direction,
+    /// The raw JSON line.
+    pub(crate) line: String,
+}
 
 /// Per-device control UI state (color-picker overlays + slider drafts).
 pub(crate) struct PickerState {
@@ -31,6 +54,10 @@ pub(crate) struct PickerState {
     pub(crate) bg_bright: u8,
     pub(crate) main_ct: u16,
     pub(crate) bg_ct: u16,
+    /// Light-tab segment override: `Some(true)` = temperature, `Some(false)` =
+    /// color, `None` = follow the device's reported mode (main) or default (bg).
+    pub(crate) main_seg: Option<bool>,
+    pub(crate) bg_seg: Option<bool>,
 }
 
 impl Default for PickerState {
@@ -44,6 +71,8 @@ impl Default for PickerState {
             bg_bright: 100,
             main_ct: 4000,
             bg_ct: 4000,
+            main_seg: None,
+            bg_seg: None,
         }
     }
 }
@@ -122,22 +151,34 @@ pub(crate) struct App {
     pub(crate) scan_progress: f32,
     /// Buttons whose command is awaiting a reply (so only they disable).
     pub(crate) inflight: HashSet<OpKey>,
-    /// The discovery port is known-open (from the startup check or after opening it).
-    pub(crate) port_open: bool,
-    /// Active control tab per device id.
-    pub(crate) tabs: HashMap<String, crate::message::DetailTab>,
+    /// Whether we've already offered to open the firewall this session (after an
+    /// empty scan). Guards the offer so it pops at most once, not on every rescan.
+    pub(crate) asked_open: bool,
+    /// Active control tab per `(device id, background?)` — each light tabs apart.
+    pub(crate) tabs: HashMap<(String, bool), crate::message::DetailTab>,
     /// In-progress rename buffer (device id, new name), if editing.
     pub(crate) rename: Option<(String, String)>,
-    /// Custom flow-editor draft rows per device id.
-    pub(crate) flow_rows: HashMap<String, Vec<FlowRow>>,
-    /// Custom flow repeat-count input per device id (raw string).
-    pub(crate) flow_count: HashMap<String, String>,
+    /// Custom flow-editor draft rows per `(device id, background?)`.
+    pub(crate) flow_rows: HashMap<(String, bool), Vec<FlowRow>>,
+    /// Custom flow repeat-count input per `(device id, background?)` (raw string).
+    pub(crate) flow_count: HashMap<(String, bool), String>,
     /// Sleep-timer minutes input per device id (raw string).
     pub(crate) timer_input: HashMap<String, String>,
     /// Active timer state per device id.
     pub(crate) timers: HashMap<String, TimerState>,
     /// Active music sessions per device id (instant-control mode).
     pub(crate) music: HashMap<String, crate::message::MusicSession>,
+    /// Last local interaction per device id; gates notification reconciliation
+    /// (see [`SYNC_DEBOUNCE`]).
+    pub(crate) last_input: HashMap<String, Instant>,
+    /// Bounded in-memory command log shown on the logging screen (newest at back).
+    pub(crate) logs: VecDeque<LogEntry>,
+    /// Pause command-log capture (both the screen buffer and the file).
+    pub(crate) log_paused: bool,
+    /// Filter the log view to one device id (`None` = show all).
+    pub(crate) log_filter: Option<String>,
+    /// Append handle for the on-disk command log (`None` if it couldn't be opened).
+    pub(crate) log_file: Option<File>,
 }
 
 impl Default for App {
@@ -157,7 +198,7 @@ impl Default for App {
             scanning: false,
             scan_progress: 0.0,
             inflight: HashSet::new(),
-            port_open: false,
+            asked_open: false,
             tabs: HashMap::new(),
             rename: None,
             flow_rows: HashMap::new(),
@@ -165,28 +206,53 @@ impl Default for App {
             timer_input: HashMap::new(),
             timers: HashMap::new(),
             music: HashMap::new(),
+            last_input: HashMap::new(),
+            logs: VecDeque::new(),
+            log_paused: false,
+            log_filter: None,
+            log_file: None,
         }
     }
 }
 
 impl App {
-    /// Initial state plus the startup firewall check. If the discovery port is
-    /// already open the [`Message::PortChecked`] handler auto-starts a scan;
-    /// otherwise the app idles until the user presses Scan.
+    /// Initial state plus an immediate scan. Scanning needs no root — `ufw` filters
+    /// packets, not `bind`/`send`, so the M-SEARCH goes out regardless. If the
+    /// firewall is blocking inbound 1982, replies are dropped and the empty result
+    /// (handled in [`Message::Scanned`]) is what offers to open the port.
     pub(crate) fn boot() -> (Self, Task<Message>) {
-        let task = Task::perform(
-            async move {
-                firewall::is_udp_open(discovery::SSDP_PORT)
-                    .await
-                    .map_err(|e| e.to_string())
-            },
-            Message::PortChecked,
-        );
-        (Self::default(), task)
+        let mut app = Self::default();
+        // Restore persisted settings before the scan (timeout feeds start_scan).
+        let s = crate::settings::load();
+        app.force_all = s.force_all;
+        app.timeout_secs = s.timeout_secs;
+        app.theme = resolve_theme(&s.theme_pref);
+        app.theme_pref = s.theme_pref;
+        // Seed the device list from the cache for an instant UI; the scan below
+        // refreshes IPs, opens live connections, and re-saves.
+        app.devices = match yeelight_core::registry::load(crate::settings::devices_path()) {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::warn!(error = %e, "device cache load failed");
+                Vec::new()
+            }
+        };
+        app.selected = (!app.devices.is_empty()).then_some(0);
+        app.log_file = open_log_file();
+        let task = app.start_scan();
+        (app, task)
     }
 
-    /// Kick off a LAN scan. Assumes the discovery port is open (caller gates on
-    /// [`App::port_open`]).
+    /// Persist the current settings (best-effort; see [`crate::settings`]).
+    fn save_settings(&self) {
+        crate::settings::save(&crate::settings::Settings {
+            force_all: self.force_all,
+            timeout_secs: self.timeout_secs,
+            theme_pref: self.theme_pref.clone(),
+        });
+    }
+
+    /// Kick off a LAN scan.
     fn start_scan(&mut self) -> Task<Message> {
         self.scanning = true;
         self.scan_progress = 0.0;
@@ -221,6 +287,7 @@ impl App {
             return Task::none();
         };
         let id = self.devices[i].id.clone();
+        self.last_input.insert(id.clone(), Instant::now());
 
         // Resolve BEFORE the optimistic mutation so SetPower reads the current power.
         let op = {
@@ -265,6 +332,23 @@ impl App {
             | Op::SetRgb(true, _)
             | Op::SetBright(true, _)
             | Op::SetCt(true, _) => {}
+        }
+
+        // Sync the picker draft so preset chips / preview highlight the chosen
+        // value at once — the bg light has no local State to read back, and
+        // chips send Command directly (not the *Draft messages the sliders use).
+        {
+            let p = self.pickers.entry(id.clone()).or_default();
+            match op {
+                // Picking a color/temp also flips the Light-tab segment to match.
+                Op::SetRgb(true, rgb) => { p.bg_draft = u32_to_color(rgb); p.bg_seg = Some(false); }
+                Op::SetRgb(false, rgb) => { p.main_draft = u32_to_color(rgb); p.main_seg = Some(false); }
+                Op::SetCt(true, ct) => { p.bg_ct = ct; p.bg_seg = Some(true); }
+                Op::SetCt(false, ct) => { p.main_ct = ct; p.main_seg = Some(true); }
+                Op::SetBright(true, b) => p.bg_bright = b,
+                Op::SetBright(false, b) => p.main_bright = b,
+                Op::Toggle(_) | Op::SetPower(..) => {}
+            }
         }
 
         let btn = match kind {
@@ -315,34 +399,9 @@ impl App {
     /// The update loop.
     pub(crate) fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::Scan => {
-                if self.port_open {
-                    self.start_scan()
-                } else {
-                    // ponytail: port_open is cached from the startup check; if it
-                    // went stale the idempotent sudo open below recovers. Not worth
-                    // an async re-check on every press.
-                    Task::perform(ask_open_port(), Message::PortPromptAnswered)
-                }
-            }
-            Message::PortChecked(res) => match res {
-                Ok(true) => {
-                    self.port_open = true;
-                    self.start_scan()
-                }
-                Ok(false) => {
-                    self.status =
-                        Status::Ok("discovery port closed — press Scan to open it".into());
-                    Task::none()
-                }
-                Err(e) => {
-                    self.status = Status::Err(e);
-                    Task::none()
-                }
-            },
+            Message::Scan => self.start_scan(),
             Message::PortPromptAnswered(false) => {
-                self.status =
-                    Status::Ok("discovery port closed — press Scan to open it".into());
+                self.status = Status::Ok("0 device(s) found".into());
                 Task::none()
             }
             Message::PortPromptAnswered(true) => {
@@ -357,10 +416,7 @@ impl App {
                 )
             }
             Message::PortOpened(res) => match res {
-                Ok(()) => {
-                    self.port_open = true;
-                    self.start_scan()
-                }
+                Ok(()) => self.start_scan(),
                 Err(e) => {
                     self.status = Status::Err(e);
                     Task::none()
@@ -374,6 +430,44 @@ impl App {
                         self.devices = devices;
                         self.selected = (!self.devices.is_empty()).then_some(0);
                         self.status = Status::Ok(format!("{n} device(s) found"));
+                        // Cache for next launch, but don't clobber a good cache
+                        // with an empty result (a firewalled/transient scan finds
+                        // nothing). ponytail: a stale cache only flashes old
+                        // devices on boot — the next scan corrects it.
+                        if !self.devices.is_empty()
+                            && let Err(e) = yeelight_core::registry::save(
+                                crate::settings::devices_path(),
+                                &self.devices,
+                            )
+                        {
+                            tracing::warn!(error = %e, "device cache save failed");
+                        }
+                        // Found nothing on the first empty scan? The firewall is the
+                        // likely culprit (it drops inbound replies). Offer to open it
+                        // once — declining or finding bulbs never nags again.
+                        if self.devices.is_empty() && !self.asked_open {
+                            self.asked_open = true;
+                            return Task::perform(ask_open_port(), Message::PortPromptAnswered);
+                        }
+                        // Open a persistent control connection to each new device so we
+                        // hear its push notifications (external changes from other apps /
+                        // the physical switch). Without a live connection we listen to
+                        // nothing — the device only pushes to connected control sockets.
+                        let tasks: Vec<Task<Message>> = self
+                            .devices
+                            .iter()
+                            .filter(|d| !self.clients.contains_key(&d.id))
+                            .map(|d| {
+                                let (device, id) = (d.clone(), d.id.clone());
+                                Task::perform(
+                                    async move {
+                                        Client::connect(device).await.map(Arc::new).map_err(|e| e.to_string())
+                                    },
+                                    move |client| Message::Listening { id: id.clone(), client },
+                                )
+                            })
+                            .collect();
+                        return Task::batch(tasks);
                     }
                     Err(e) => self.status = Status::Err(e),
                 }
@@ -387,8 +481,16 @@ impl App {
                 }
                 Task::none()
             }
-            Message::SelectDetailTab(t) => {
-                if let Some(id) = self.selected_id() { self.tabs.insert(id, t); }
+            Message::SelectDetailTab { bg, tab } => {
+                if let Some(id) = self.selected_id() { self.tabs.insert((id, bg), tab); }
+                Task::none()
+            }
+            Message::SetLightSeg { bg, temp } => {
+                if let Some(id) = self.selected_id() {
+                    self.last_input.insert(id.clone(), Instant::now());
+                    let p = self.pickers.entry(id).or_default();
+                    if bg { p.bg_seg = Some(temp); } else { p.main_seg = Some(temp); }
+                }
                 Task::none()
             }
             Message::RenameStart => {
@@ -405,39 +507,54 @@ impl App {
             }
             Message::RenameCancel => { self.rename = None; Task::none() }
             Message::RenameCommit => self.rename_commit(),
-            Message::ApplyScene(i) => self.apply_scene(i),
+            Message::ApplyScene { bg, index } => self.apply_scene(bg, index),
             Message::SaveDefault => self.run_selected("set_default", |c| async move { c.set_default().await }),
-            Message::StopFlow => self.run_selected("stop_cf", |c| async move { c.stop_cf().await }),
-            Message::ApplyFlowPreset(i) => self.apply_flow_preset(i),
-            Message::FlowRowAdd => {
-                if let Some(id) = self.selected_id() {
-                    self.flow_rows.entry(id).or_default().push(FlowRow::default());
+            Message::StopFlow { bg } => self.run_selected("stop_cf", move |c| async move {
+                if bg { c.bg_stop_cf().await } else { c.stop_cf().await }
+            }),
+            Message::ApplyFlowPreset { bg, index } => self.apply_flow_preset(bg, index),
+            Message::FlowRowAdd { bg } => {
+                if let Some(i) = self.selected {
+                    let d = &self.devices[i];
+                    let force = self.force_all;
+                    let has = |m: &str| force || d.supports(m);
+                    // Default a new step to a mode the light supports: color if it
+                    // can, else temperature (a temp-only light can't do color steps).
+                    let temp_only = !has(if bg { "bg_set_rgb" } else { "set_rgb" })
+                        && has(if bg { "bg_set_ct_abx" } else { "set_ct_abx" });
+                    let id = d.id.clone();
+                    let mut r = FlowRow::default();
+                    if temp_only {
+                        r.mode = 2;
+                        r.value = "4000".into();
+                    }
+                    self.flow_rows.entry((id, bg)).or_default().push(r);
                 }
                 Task::none()
             }
-            Message::FlowRowDel(row) => {
+            Message::FlowRowDel { bg, row } => {
                 if let Some(id) = self.selected_id()
-                    && let Some(rows) = self.flow_rows.get_mut(&id)
+                    && let Some(rows) = self.flow_rows.get_mut(&(id, bg))
                     && row < rows.len()
                 {
                     rows.remove(row);
                 }
                 Task::none()
             }
-            Message::FlowRowEdit { row, field, value } => {
+            Message::FlowRowEdit { bg, row, field, value } => {
                 if let Some(id) = self.selected_id()
-                    && let Some(rows) = self.flow_rows.get_mut(&id)
+                    && let Some(rows) = self.flow_rows.get_mut(&(id, bg))
                     && let Some(r) = rows.get_mut(row)
                 {
                     r.set(field, value);
                 }
                 Task::none()
             }
-            Message::FlowCountEdit(s) => {
-                if let Some(id) = self.selected_id() { self.flow_count.insert(id, s); }
+            Message::FlowCountEdit { bg, value } => {
+                if let Some(id) = self.selected_id() { self.flow_count.insert((id, bg), value); }
                 Task::none()
             }
-            Message::StartCustomFlow => self.start_custom_flow(),
+            Message::StartCustomFlow { bg } => self.start_custom_flow(bg),
             Message::TimerEdit(s) => {
                 if let Some(id) = self.selected_id() { self.timer_input.insert(id, s); }
                 Task::none()
@@ -450,6 +567,20 @@ impl App {
                 match session {
                     Ok(s) => { self.music.insert(id, s); self.status = Status::Ok("instant mode on".into()); }
                     Err(e) => self.status = Status::Err(e),
+                }
+                Task::none()
+            }
+            Message::Listening { id, client } => {
+                // Offline/unreachable devices are skipped: the tab still works, it
+                // just won't show live external changes. or_insert avoids clobbering
+                // a client a concurrent command already cached.
+                match client {
+                    Ok(arc) => {
+                        tracing::info!(%id, "listening: control connection established");
+                        arc.set_force(self.force_all);
+                        self.clients.entry(id).or_insert(arc);
+                    }
+                    Err(e) => tracing::warn!(%id, error = %e, "listening: connect failed"),
                 }
                 Task::none()
             }
@@ -511,6 +642,7 @@ impl App {
             }
             Message::BrightDraft { bg, value } => {
                 if let Some(id) = self.selected_id() {
+                    self.last_input.insert(id.clone(), Instant::now());
                     let p = self.pickers.entry(id).or_default();
                     if bg {
                         p.bg_bright = value;
@@ -522,6 +654,7 @@ impl App {
             }
             Message::TempDraft { bg, value } => {
                 if let Some(id) = self.selected_id() {
+                    self.last_input.insert(id.clone(), Instant::now());
                     let p = self.pickers.entry(id).or_default();
                     if bg {
                         p.bg_ct = value;
@@ -536,6 +669,7 @@ impl App {
                 for c in self.clients.values() {
                     c.set_force(on);
                 }
+                self.save_settings();
                 Task::none()
             }
             Message::SelectSettingsTab(tab) => {
@@ -545,11 +679,15 @@ impl App {
             Message::ThemeChanged(pref) => {
                 self.theme = resolve_theme(&pref);
                 self.theme_pref = pref;
+                self.save_settings();
                 Task::none()
             }
             Message::TimeoutChanged(s) => {
                 let digits: String = s.chars().filter(|c| c.is_ascii_digit()).collect();
                 self.timeout_secs = digits.parse().unwrap_or(0);
+                // ponytail: writes per keystroke; the file is a few bytes, so no
+                // debounce. Add one if this ever shows up on a profile.
+                self.save_settings();
                 Task::none()
             }
             Message::Tick => {
@@ -560,11 +698,65 @@ impl App {
                 Task::none()
             }
             Message::StateChanged { id, params } => {
-                if let Some(d) = self.devices.iter_mut().find(|d| d.id == id) {
-                    apply_props(&mut d.state, &params);
+                // Reconcile the controls from device truth, unless the user just
+                // touched this device (debounce) — otherwise a notification mid-drag,
+                // or the device echoing our own command, would yank the sliders.
+                let fresh = self.last_input.get(&id).is_none_or(|t| t.elapsed() >= SYNC_DEBOUNCE);
+                tracing::debug!(%id, ?params, fresh, "props notification");
+                let Some(d) = self.devices.iter_mut().find(|d| d.id == id) else {
+                    return Task::none();
+                };
+                apply_props(&mut d.state, &params);
+                if fresh {
+                    let s = &d.state;
+                    let p = self.pickers.entry(id).or_default();
+                    // Main light.
+                    if let Some(b) = s.bright { p.main_bright = b; }
+                    if let Some(ct) = s.ct { p.main_ct = ct; }
+                    if let Some(rgb) = s.rgb { p.main_draft = u32_to_color(rgb); }
+                    if let Some(mode) = s.color_mode { p.main_seg = Some(mode == 2); }
+                    // Background light.
+                    if let Some(b) = s.bg_bright { p.bg_bright = b; }
+                    if let Some(ct) = s.bg_ct { p.bg_ct = ct; }
+                    if let Some(rgb) = s.bg_rgb { p.bg_draft = u32_to_color(rgb); }
+                    if let Some(mode) = s.bg_color_mode { p.bg_seg = Some(mode == 2); }
                 }
                 Task::none()
             }
+            Message::Logged { id, direction, line } => {
+                if !self.log_paused {
+                    let entry = LogEntry { time: SystemTime::now(), device: id, direction, line };
+                    if let Some(f) = &mut self.log_file {
+                        let arrow = match entry.direction {
+                            Direction::Sent => "->",
+                            Direction::Received => "<-",
+                        };
+                        if let Err(e) = writeln!(
+                            f,
+                            "{} UTC {arrow} {} {}",
+                            fmt_time(entry.time), entry.device, entry.line,
+                        ) {
+                            tracing::warn!(error = %e, "log file: write failed");
+                        }
+                    }
+                    self.logs.push_back(entry);
+                    while self.logs.len() > LOG_CAP {
+                        self.logs.pop_front();
+                    }
+                }
+                Task::none()
+            }
+            Message::LogClear => { self.logs.clear(); Task::none() }
+            Message::LogTogglePause => { self.log_paused = !self.log_paused; Task::none() }
+            Message::LogOpenFile => {
+                // open::that_detached picks the platform opener (xdg-open / open / start)
+                // and returns immediately, so the UI thread never blocks.
+                if let Err(e) = open::that_detached(crate::settings::log_path()) {
+                    self.status = Status::Err(format!("open log: {e}"));
+                }
+                Task::none()
+            }
+            Message::LogFilterDevice(f) => { self.log_filter = f; Task::none() }
         }
     }
 
@@ -578,10 +770,10 @@ impl App {
         self.theme.clone()
     }
 
-    /// The active detail tab for the selected device.
-    pub(crate) fn active_tab(&self) -> crate::message::DetailTab {
+    /// The active detail tab for the selected device's main or background light.
+    pub(crate) fn active_tab(&self, bg: bool) -> crate::message::DetailTab {
         self.selected_id()
-            .and_then(|id| self.tabs.get(&id).copied())
+            .and_then(|id| self.tabs.get(&(id, bg)).copied())
             .unwrap_or_default()
     }
 
@@ -595,28 +787,31 @@ impl App {
     }
 
     /// Apply a preset scene (by index into [`crate::presets::SCENES`]) to the
-    /// main light.
-    fn apply_scene(&mut self, i: usize) -> Task<Message> {
+    /// given light.
+    fn apply_scene(&mut self, bg: bool, i: usize) -> Task<Message> {
         let Some(p) = crate::presets::SCENES.get(i) else { return Task::none() };
         let scene = (p.make)();
-        self.run_selected("scene applied", move |c| async move { c.set_scene(scene).await })
+        self.run_selected("scene applied", move |c| async move {
+            if bg { c.bg_set_scene(scene).await } else { c.set_scene(scene).await }
+        })
     }
-    /// Apply a preset flow (by index into [`crate::presets::FLOWS`]) to the main light.
-    fn apply_flow_preset(&mut self, i: usize) -> Task<Message> {
+    /// Apply a preset flow (by index into [`crate::presets::FLOWS`]) to the given light.
+    fn apply_flow_preset(&mut self, bg: bool, i: usize) -> Task<Message> {
         let Some(p) = crate::presets::FLOWS.get(i) else { return Task::none() };
         let (count, action, expr) = (p.count, p.action, (p.make)());
         self.run_selected("flow started", move |c| async move {
-            c.start_cf(count, action, expr).await
+            if bg { c.bg_start_cf(count, action, expr).await } else { c.start_cf(count, action, expr).await }
         })
     }
 
     /// Start the custom flow from the editor draft. Validates the expression
     /// locally (non-empty, each step >=50ms) before sending so a bad draft
     /// surfaces in the status bar instead of a device rejection.
-    fn start_custom_flow(&mut self) -> Task<Message> {
+    fn start_custom_flow(&mut self, bg: bool) -> Task<Message> {
         let Some(id) = self.selected_id() else { return Task::none() };
-        let rows = self.flow_rows.get(&id).cloned().unwrap_or_default();
-        let count = self.flow_count.get(&id).and_then(|s| s.parse().ok()).unwrap_or(0u32);
+        let key = (id, bg);
+        let rows = self.flow_rows.get(&key).cloned().unwrap_or_default();
+        let count = self.flow_count.get(&key).and_then(|s| s.parse().ok()).unwrap_or(0u32);
         let expr = match rows_to_expr(&rows) {
             Ok(e) => e,
             Err(e) => {
@@ -629,7 +824,11 @@ impl App {
             return Task::none();
         }
         self.run_selected("flow started", move |c| async move {
-            c.start_cf(count, FlowAction::Recover, expr).await
+            if bg {
+                c.bg_start_cf(count, FlowAction::Recover, expr).await
+            } else {
+                c.start_cf(count, FlowAction::Recover, expr).await
+            }
         })
     }
     /// Start a sleep timer on the selected device: power off after the entered
@@ -745,6 +944,14 @@ impl App {
                 )
             })
             .collect();
+        // A second stream per device for the raw command log (distinct recipe type
+        // from `Sub`, so a device runs both a notification and a log stream).
+        for (id, client) in &self.clients {
+            subs.push(Subscription::run_with(
+                LogSub { id: id.clone(), client: Arc::clone(client) },
+                build_log_stream,
+            ));
+        }
         if self.scanning {
             subs.push(iced::time::every(Duration::from_millis(100)).map(|_| Message::Tick));
         }
@@ -772,6 +979,7 @@ impl Hash for Sub {
 /// boxed so the return type doesn't borrow the input reference.
 fn build_stream(sub: &Sub) -> Pin<Box<dyn Stream<Item = Message> + Send>> {
     let id = sub.id.clone();
+    tracing::debug!(%id, "notification stream started");
     let stream = BroadcastStream::new(sub.client.notifications()).filter_map(move |res| {
         res.ok().map(|n| Message::StateChanged {
             id: id.clone(),
@@ -781,11 +989,71 @@ fn build_stream(sub: &Sub) -> Pin<Box<dyn Stream<Item = Message> + Send>> {
     Box::pin(stream)
 }
 
+/// Subscription key + source for the raw command log. A distinct type from [`Sub`]
+/// so iced keeps a device's log stream separate from its notification stream.
+struct LogSub {
+    id: String,
+    client: Arc<Client>,
+}
+
+impl Hash for LogSub {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+    }
+}
+
+/// Turn a device's log receiver into a stream of [`Message::Logged`].
+fn build_log_stream(sub: &LogSub) -> Pin<Box<dyn Stream<Item = Message> + Send>> {
+    let id = sub.id.clone();
+    let stream = BroadcastStream::new(sub.client.logs()).filter_map(move |res| {
+        res.ok().map(|l| Message::Logged {
+            id: id.clone(),
+            direction: l.direction,
+            line: l.line,
+        })
+    });
+    Box::pin(stream)
+}
+
+/// Open (creating parent dirs) the command log for appending. Best-effort: any
+/// failure is logged and logging falls back to the in-memory screen only.
+fn open_log_file() -> Option<File> {
+    let path = crate::settings::log_path();
+    if let Some(dir) = path.parent()
+        && let Err(e) = std::fs::create_dir_all(dir)
+    {
+        tracing::warn!(error = %e, "log file: mkdir failed");
+        return None;
+    }
+    match std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        Ok(f) => Some(f),
+        Err(e) => {
+            tracing::warn!(error = %e, "log file: open failed");
+            None
+        }
+    }
+}
+
+/// Format a wall-clock time as `HH:MM:SS.mmm` (UTC).
+// ponytail: UTC, no tz crate. Add chrono/time if local time matters for the log.
+pub(crate) fn fmt_time(t: SystemTime) -> String {
+    let d = t.duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default();
+    let secs = d.as_secs();
+    format!(
+        "{:02}:{:02}:{:02}.{:03}",
+        (secs / 3600) % 24,
+        (secs / 60) % 60,
+        secs % 60,
+        d.subsec_millis(),
+    )
+}
+
 /// Merge a `props` notification (all string values) into the local [`State`].
 fn apply_props(state: &mut State, params: &HashMap<String, String>) {
     for (k, v) in params {
         match k.as_str() {
-            "power" => state.power = Some(v == "on"),
+            // Main light. Multi-light devices report `main_power`; single-light `power`.
+            "power" | "main_power" => state.power = Some(v == "on"),
             "bright" => state.bright = v.parse().ok().or(state.bright),
             "rgb" => state.rgb = v.parse().ok().or(state.rgb),
             "ct" => state.ct = v.parse().ok().or(state.ct),
@@ -793,21 +1061,29 @@ fn apply_props(state: &mut State, params: &HashMap<String, String>) {
             "sat" => state.sat = v.parse().ok().or(state.sat),
             "color_mode" => state.color_mode = v.parse().ok().or(state.color_mode),
             "name" => state.name = Some(v.clone()),
+            // Background light.
+            "bg_power" => state.bg_power = Some(v == "on"),
+            "bg_bright" => state.bg_bright = v.parse().ok().or(state.bg_bright),
+            "bg_rgb" => state.bg_rgb = v.parse().ok().or(state.bg_rgb),
+            "bg_ct" => state.bg_ct = v.parse().ok().or(state.bg_ct),
+            "bg_hue" => state.bg_hue = v.parse().ok().or(state.bg_hue),
+            "bg_sat" => state.bg_sat = v.parse().ok().or(state.bg_sat),
+            "bg_lmode" => state.bg_color_mode = v.parse().ok().or(state.bg_color_mode),
             _ => {}
         }
     }
 }
 
-/// Show a native yes/no popup asking to open the (closed) discovery port.
-/// Returns `true` if the user agreed. On yes, the privileged `ufw allow` runs via
-/// `pkexec`, so the system's own polkit dialog collects the password — no terminal.
+/// Show a native yes/no popup offering to open the discovery port after an empty
+/// scan. Returns `true` if the user agreed. On yes, the privileged `ufw allow` runs
+/// via `pkexec`, so the system's own polkit dialog collects the password — no terminal.
 async fn ask_open_port() -> bool {
     rfd::AsyncMessageDialog::new()
         .set_level(rfd::MessageLevel::Info)
         .set_title("Yeelight Studio")
         .set_description(format!(
-            "Discovery port {}/udp is closed in the firewall.\n\nOpen it now? \
-             Your system will ask for your password.",
+            "No bulbs found. The firewall may be blocking discovery port {}/udp.\n\n\
+             Open it now? Your system will ask for your password.",
             discovery::SSDP_PORT
         ))
         .set_buttons(rfd::MessageButtons::YesNo)
@@ -888,6 +1164,28 @@ pub(crate) fn u32_to_color(rgb: u32) -> Color {
     )
 }
 
+/// Color temperature in Kelvin → an approximate display [`Color`] (Tanner
+/// Helland's blackbody fit). Used only to tint the preview swatch in CT mode;
+/// not sent to the device. Accurate enough over the 1700–6500K bulb range.
+pub(crate) fn ct_to_color(kelvin: u16) -> Color {
+    let t = kelvin as f32 / 100.0;
+    let red = if t <= 66.0 { 255.0 } else { 329.698_73 * (t - 60.0).powf(-0.133_204_76) };
+    let green = if t <= 66.0 {
+        99.470_8 * t.ln() - 161.119_57
+    } else {
+        288.122_16 * (t - 60.0).powf(-0.075_514_85)
+    };
+    let blue = if t >= 66.0 {
+        255.0
+    } else if t <= 19.0 {
+        0.0
+    } else {
+        138.517_73 * (t - 10.0).ln() - 305.044_8
+    };
+    let ch = |v: f32| v.clamp(0.0, 255.0) / 255.0;
+    Color::from_rgb(ch(red), ch(green), ch(blue))
+}
+
 /// Convert custom-flow editor rows to a [`FlowExpr`]. Unparseable fields fall
 /// back to safe defaults (`0`, or `-1` "keep brightness"); the device-side
 /// rules (each step >=50ms etc.) are enforced later by [`FlowExpr::render`].
@@ -912,10 +1210,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn fmt_time_formats_epoch() {
+        assert_eq!(fmt_time(SystemTime::UNIX_EPOCH), "00:00:00.000");
+        assert_eq!(fmt_time(SystemTime::UNIX_EPOCH + Duration::from_millis(3_661_500)), "01:01:01.500");
+    }
+
+    #[test]
     fn color_u32_round_trips() {
         for rgb in [0x000000, 0xFF0000, 0x00FF00, 0x0000FF, 0x123456, 0xFFFFFF] {
             assert_eq!(color_to_u32(u32_to_color(rgb)), rgb);
         }
+    }
+
+    #[test]
+    fn ct_color_is_warm_low_cool_high() {
+        let warm = ct_to_color(1700);
+        let cool = ct_to_color(6500);
+        // Warm = reddish (more red than blue); cool ≈ white (blue caught up).
+        assert!(warm.r > warm.b);
+        assert!(cool.b > warm.b);
+        assert!(cool.r >= cool.b - 0.2); // near-neutral at the top
     }
 
     #[test]

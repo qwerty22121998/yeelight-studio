@@ -48,6 +48,9 @@ pub(crate) fn view(app: &App) -> Element<'_, Message> {
     let settings = button(text("\u{2699} Settings"))
         .width(Fill)
         .on_press(Message::SelectScreen(Screen::Settings));
+    let logs = button(text("\u{1f4d1} Logs"))
+        .width(Fill)
+        .on_press(Message::SelectScreen(Screen::Logging));
 
     container(
         column![
@@ -55,6 +58,7 @@ pub(crate) fn view(app: &App) -> Element<'_, Message> {
             scrollable(list).height(Fill),
             scan,
             settings,
+            logs,
         ]
         .spacing(10),
     )
