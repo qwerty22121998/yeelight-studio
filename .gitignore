@@ -19,3 +19,7 @@ yeelight-devices.toml
 # OS junk
 .DS_Store
 Thumbs.db
+
+# superpowers brainstorm scratch
+.superpowers/
+docs/superpowers/

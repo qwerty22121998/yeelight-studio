@@ -32,7 +32,7 @@ pub mod message;
 pub mod music;
 pub mod registry;
 
-pub use client::Client;
+pub use client::{Client, Direction, LogLine};
 pub use commands::{
     AdjustAction, AdjustProp, CronType, Effect, FlowAction, FlowExpr, FlowTuple, PowerMode, Scene,
 };

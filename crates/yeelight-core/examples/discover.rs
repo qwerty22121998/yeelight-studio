@@ -14,9 +14,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_max_level(tracing::Level::INFO)
         .init();
 
-    // YEELIGHT_SUDO=1 escalates the firewall step via `sudo` (prompts for a password).
+    // YEELIGHT_SUDO=1 escalates the firewall step via `pkexec` (graphical password prompt).
     if std::env::var("YEELIGHT_SUDO").is_ok() {
-        firewall::ensure_udp_open_sudo(discovery::SSDP_PORT).await?;
+        firewall::ensure_udp_open_pkexec(discovery::SSDP_PORT).await?;
     } else {
         firewall::ensure_udp_open(discovery::SSDP_PORT).await?;
     }

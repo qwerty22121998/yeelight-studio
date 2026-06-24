@@ -6,9 +6,9 @@
 //! [`Error::Firewall`] with the exact command to run manually.
 //!
 //! The plain helpers ([`ensure_udp_open`], [`ensure_tcp_open`]) never escalate. The
-//! `*_sudo` variants opt in to running `sudo ufw allow`, which prompts for a password
-//! on the controlling terminal — so they only work from an interactive shell (or with
-//! a `NOPASSWD` sudoers rule / cached credentials), not from a non-TTY context.
+//! `*_pkexec` variants opt in to running `pkexec ufw allow`, which asks for a password
+//! through the desktop's polkit agent (a graphical dialog) — so they work from a GUI
+//! with no controlling terminal, unlike a bare `sudo`.
 
 use tokio::process::Command;
 
@@ -24,24 +24,45 @@ pub async fn ensure_tcp_open(port: u16) -> Result<()> {
     ensure_open(port, "tcp").await
 }
 
-/// Like [`ensure_udp_open`] but escalates via `sudo` (may prompt for a password).
-pub async fn ensure_udp_open_sudo(port: u16) -> Result<()> {
-    sudo_allow(&format!("{port}/udp")).await
+/// Whether inbound UDP `port` is already reachable — i.e. nothing is blocking it.
+///
+/// `true` when `ufw` is missing, inactive, or already allows the rule; `false`
+/// when `ufw` is active without a matching rule, or its status can't be read
+/// (typically needs root). Use this to decide whether discovery can run before
+/// opening the firewall, rather than opening it unconditionally.
+pub async fn is_udp_open(port: u16) -> Result<bool> {
+    is_open(port, "udp").await
 }
 
-/// Like [`ensure_tcp_open`] but escalates via `sudo` (may prompt for a password).
-pub async fn ensure_tcp_open_sudo(port: u16) -> Result<()> {
-    sudo_allow(&format!("{port}/tcp")).await
+/// Like [`ensure_udp_open`] but escalates via `pkexec` (graphical polkit prompt).
+pub async fn ensure_udp_open_pkexec(port: u16) -> Result<()> {
+    pkexec_allow(&format!("{port}/udp")).await
 }
 
-/// Run `sudo ufw allow <rule>` inheriting the terminal so the password prompt works.
+/// Like [`ensure_tcp_open`] but escalates via `pkexec` (graphical polkit prompt).
+pub async fn ensure_tcp_open_pkexec(port: u16) -> Result<()> {
+    pkexec_allow(&format!("{port}/tcp")).await
+}
+
+/// Run `pkexec ufw allow <rule>` so the desktop polkit agent prompts for the
+/// password graphically — no controlling terminal required.
 ///
 /// `ufw allow` is idempotent (re-adding an existing rule is a no-op), so no status
-/// pre-check is needed.
-async fn sudo_allow(rule: &str) -> Result<()> {
-    tracing::info!("opening firewall: sudo ufw allow {rule} (may prompt for password)");
-    // `.status()` inherits stdin/stdout/stderr -> sudo can prompt on the TTY.
-    let status = match Command::new("sudo")
+/// pre-check is needed. A dismissed or denied prompt surfaces as [`Error::Firewall`]
+/// carrying the manual command.
+async fn pkexec_allow(rule: &str) -> Result<()> {
+    // ufw/pkexec are Linux-only. On macOS/Windows the OS firewall is the user's to
+    // manage; skip silently rather than surfacing a spurious "pkexec not found".
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = rule;
+        tracing::info!("non-Linux platform; skipping ufw firewall step");
+        return Ok(());
+    }
+    #[cfg(target_os = "linux")]
+    {
+    tracing::info!("opening firewall: pkexec ufw allow {rule} (graphical password prompt)");
+    let status = match Command::new("pkexec")
         .arg("ufw")
         .arg("allow")
         .arg(rule)
@@ -51,17 +72,22 @@ async fn sudo_allow(rule: &str) -> Result<()> {
         Ok(s) => s,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return Err(Error::Firewall(format!(
-                "`sudo` not found. Run manually: sudo ufw allow {rule}"
+                "`pkexec` not found. Run manually: sudo ufw allow {rule}"
             )));
         }
-        Err(e) => return Err(Error::Firewall(format!("running `sudo ufw allow {rule}`: {e}"))),
+        Err(e) => {
+            return Err(Error::Firewall(format!(
+                "running `pkexec ufw allow {rule}`: {e}"
+            )));
+        }
     };
     if !status.success() {
         return Err(Error::Firewall(format!(
-            "`sudo ufw allow {rule}` failed. Run manually: sudo ufw allow {rule}"
+            "opening the firewall was cancelled or failed. Run manually: sudo ufw allow {rule}"
         )));
     }
     Ok(())
+    }
 }
 
 async fn ensure_open(port: u16, proto: &str) -> Result<()> {
@@ -105,4 +131,35 @@ async fn ensure_open(port: u16, proto: &str) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+/// Query `ufw` for whether `port`/`proto` is already permitted. See [`is_udp_open`].
+async fn is_open(port: u16, proto: &str) -> Result<bool> {
+    let rule = format!("{port}/{proto}");
+    match Command::new("ufw").arg("status").output().await {
+        Ok(o) if o.status.success() => Ok(status_allows(&String::from_utf8_lossy(&o.stdout), &rule)),
+        // `ufw status` failed (typically needs root) → can't confirm → treat as closed.
+        Ok(_) => Ok(false),
+        // No ufw installed → nothing is blocking the port.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Err(e) => Err(Error::Firewall(format!("running `ufw status`: {e}"))),
+    }
+}
+
+/// `true` if a `ufw status` dump shows the firewall inactive or carrying `rule`.
+fn status_allows(stdout: &str, rule: &str) -> bool {
+    stdout.contains("Status: inactive") || stdout.contains(rule)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::status_allows;
+
+    #[test]
+    fn reads_ufw_status() {
+        let active = "Status: active\n\nTo  Action  From\n--  ------  ----\n1982/udp  ALLOW  Anywhere\n";
+        assert!(status_allows(active, "1982/udp"));
+        assert!(!status_allows(active, "55443/tcp"));
+        assert!(status_allows("Status: inactive\n", "1982/udp"));
+    }
 }

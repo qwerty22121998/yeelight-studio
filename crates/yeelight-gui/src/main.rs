@@ -5,12 +5,22 @@
 
 mod app;
 mod message;
+mod presets;
+mod settings;
 mod view;
 
 use app::App;
 
 fn main() -> iced::Result {
-    iced::application(App::default, App::update, App::view)
+    use tracing_subscriber::EnvFilter;
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new("yeelight_gui=info,yeelight_core=debug")),
+        )
+        .init();
+
+    iced::application(App::boot, App::update, App::view)
         .title("Yeelight Studio")
         .theme(App::theme)
         .subscription(App::subscription)

@@ -79,6 +79,20 @@ pub struct State {
     pub sat: Option<u8>,
     /// Device name set via `set_name`.
     pub name: Option<String>,
+    /// Background-light power (`bg_power`), for devices with a second light.
+    pub bg_power: Option<bool>,
+    /// Background-light brightness (`bg_bright`).
+    pub bg_bright: Option<u8>,
+    /// Background-light color mode (`bg_lmode`): `1` rgb, `2` ct, `3` hsv.
+    pub bg_color_mode: Option<u8>,
+    /// Background-light color temperature (`bg_ct`).
+    pub bg_ct: Option<u16>,
+    /// Background-light RGB (`bg_rgb`).
+    pub bg_rgb: Option<u32>,
+    /// Background-light hue (`bg_hue`).
+    pub bg_hue: Option<u16>,
+    /// Background-light saturation (`bg_sat`).
+    pub bg_sat: Option<u8>,
 }
 
 /// A discovered Yeelight device.
