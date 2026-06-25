@@ -34,9 +34,11 @@ pub(crate) struct AmbientConfig {
     pub(crate) mode: color::ExtractMode,
     /// Display id captured (None = primary). Changing it requires stop→start.
     pub(crate) monitor_id: Option<u32>,
-    /// Drive the main light (only settable if `set_rgb` is supported).
+    /// Drive the main light (settable if it has any color control — `set_rgb` or, for a
+    /// white-only bulb, `set_ct_abx`).
     pub(crate) main: bool,
-    /// Drive the background light (only settable if `bg_set_rgb` is supported).
+    /// Drive the background light (settable if it has any color control — `bg_set_rgb` or,
+    /// for a white-only bulb, `bg_set_ct_abx`).
     pub(crate) bg: bool,
 }
 

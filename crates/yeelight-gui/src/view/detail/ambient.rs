@@ -56,12 +56,26 @@ pub(crate) fn body<'a>(app: &'a App, d: &'a Device) -> Element<'a, Message> {
     // monitor is fixed at start). Selecting one sets the start-time monitor. The list is
     // cached in App (enumerating spawns a subprocess) and refreshed on scan.
     if !running && app.monitors.len() > 1 {
-        let monitors = app.monitors.clone();
-        let selected = monitors.iter().find(|m| Some(m.id) == cfg.monitor_id).cloned();
+        // Include an explicit "Primary (auto)" choice mapping to monitor_id = None, so the
+        // default is selectable and shown (capture falls back to the focused/first display).
+        let mut choices = vec![MonitorChoice::Primary];
+        choices.extend(app.monitors.iter().cloned().map(MonitorChoice::Display));
+        let selected = match cfg.monitor_id {
+            Some(id) => app
+                .monitors
+                .iter()
+                .find(|m| m.id == id)
+                .cloned()
+                .map_or(MonitorChoice::Primary, MonitorChoice::Display),
+            None => MonitorChoice::Primary,
+        };
         col = col.push(
             row![
                 text("Monitor").width(90),
-                pick_list(monitors, selected, |m| Message::AmbientSetMonitor(Some(m.id))),
+                pick_list(choices, Some(selected), |c| match c {
+                    MonitorChoice::Primary => Message::AmbientSetMonitor(None),
+                    MonitorChoice::Display(m) => Message::AmbientSetMonitor(Some(m.id)),
+                }),
             ]
             .spacing(10)
             .align_y(iced::Center),
@@ -70,6 +84,23 @@ pub(crate) fn body<'a>(app: &'a App, d: &'a Device) -> Element<'a, Message> {
 
     let label = if running { "Stop ambient" } else { "Start ambient" };
     col.push(button(text(label)).on_press(Message::AmbientToggle)).into()
+}
+
+/// A monitor-picker choice: the auto/primary default (`monitor_id = None`) or a specific
+/// display. Lets the picker show and re-select the default instead of only concrete monitors.
+#[derive(Clone, PartialEq)]
+enum MonitorChoice {
+    Primary,
+    Display(crate::ambient::capture::Monitor),
+}
+
+impl std::fmt::Display for MonitorChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MonitorChoice::Primary => f.write_str("Primary (auto)"),
+            MonitorChoice::Display(m) => write!(f, "{m}"),
+        }
+    }
 }
 
 /// Running (with the live send mode) or off.

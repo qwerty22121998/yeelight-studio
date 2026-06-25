@@ -62,7 +62,7 @@ cargo run -p yeelight-gui   # discover and control bulbs from a window
 
 ### Ambient screen-capture (GUI)
 
-The GUI's **Ambient** tab mirrors a screen region's color onto the bulb in real time. Pick a
+The GUI's **Ambient** section mirrors a screen region's color onto the bulb in real time. Pick a
 region (whole / top / bottom / left / right), an extraction mode (average / dominant /
 average+saturation), and which light(s) to drive; it streams over music mode at ~15 fps when
 available, otherwise falls back to rate-limited `set_rgb` at ~2 fps. Targets that only support
