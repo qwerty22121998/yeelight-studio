@@ -3,6 +3,7 @@
 //! Thin iced front-end over the `yeelight-core` library: scan the LAN, pick a
 //! device from the tab bar, and toggle / recolor its main and background lights.
 
+mod ambient;
 mod app;
 mod message;
 mod presets;
