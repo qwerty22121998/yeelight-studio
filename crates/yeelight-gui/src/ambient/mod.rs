@@ -3,9 +3,6 @@
 //! `capture` runs a thread publishing the latest region color into a `watch`; [`run_stream`]
 //! ticks at a sink-derived rate, dedups, and pushes the color to the bulb's main/bg lights.
 
-// Items below are consumed by the view task (not in this chunk); suppress dead-code noise.
-#![allow(dead_code)]
-
 pub(crate) mod capture;
 pub(crate) mod color;
 

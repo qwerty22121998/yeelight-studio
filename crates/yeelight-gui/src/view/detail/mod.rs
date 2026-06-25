@@ -2,6 +2,7 @@
 //! gets the full tabbed surface; the background light (when supported) gets its
 //! own clearly separated section with power, brightness, and color/white.
 
+pub(crate) mod ambient;
 pub(crate) mod color;
 pub(crate) mod flow;
 pub(crate) mod light;
@@ -26,6 +27,7 @@ const TABS: &[(&str, DetailTab)] = &[
     ("Flow", DetailTab::Flow),
     ("Timer", DetailTab::Timer),
     ("\u{26a1} Music", DetailTab::Music),
+    ("\u{1f5b5} Ambient", DetailTab::Ambient),
 ];
 
 /// Whether a control gated by `method` should be shown: the device advertises
@@ -59,8 +61,7 @@ fn tab_supported(app: &App, d: &Device, tab: DetailTab, bg: bool) -> bool {
         DetailTab::Flow => has("start_cf", "bg_start_cf"),
         DetailTab::Timer => !bg && enabled(app, d, "cron_add"),
         DetailTab::Music => !bg && enabled(app, d, "set_music"),
-        // The Ambient tab UI lands in a later task; not selectable yet.
-        DetailTab::Ambient => false,
+        DetailTab::Ambient => !bg && (has("set_rgb", "set_rgb") || has("bg_set_rgb", "bg_set_rgb")),
     }
 }
 
@@ -201,8 +202,7 @@ fn light_section<'a>(app: &'a App, d: &'a Device, bg: bool) -> Element<'a, Messa
             DetailTab::Flow => flow::body(app, d, bg),
             DetailTab::Timer => timer::body(app, d),
             DetailTab::Music => music::body(app, d),
-            // Unreachable: Ambient is not in TABS until a later task adds its UI.
-            DetailTab::Ambient => Space::new().into(),
+            DetailTab::Ambient => ambient::body(app, d),
         };
         col = col
             .push(tab_strip(&tabs, active, move |tab| Message::SelectDetailTab { bg, tab }))

@@ -22,6 +22,16 @@ pub(crate) struct Monitor {
     pub(crate) label: String,
 }
 
+impl std::fmt::Display for Monitor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.label.is_empty() {
+            write!(f, "Display {}", self.id)
+        } else {
+            f.write_str(&self.label)
+        }
+    }
+}
+
 /// All displays scap can see (windows excluded). Empty if capture is unsupported.
 pub(crate) fn monitors() -> Vec<Monitor> {
     if !scap::is_supported() {
