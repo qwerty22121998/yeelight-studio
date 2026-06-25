@@ -111,7 +111,7 @@ pub(crate) fn extract(buf: &[u8], stride: usize, bounds: (u32, u32, u32, u32), m
     match mode {
         ExtractMode::Average => average(buf, stride, bounds),
         ExtractMode::Dominant => dominant(buf, stride, bounds),
-        ExtractMode::AverageSaturated => Rgb::BLACK,   // implemented in sub-step 3
+        ExtractMode::AverageSaturated => saturate(average(buf, stride, bounds), 1.4),
     }
 }
 
@@ -135,6 +135,25 @@ fn average(buf: &[u8], stride: usize, (x, y, w, h): (u32, u32, u32, u32)) -> Rgb
         return Rgb::BLACK;
     }
     Rgb { r: (sr / n) as u8, g: (sg / n) as u8, b: (sb / n) as u8 }
+}
+
+/// Scale a color's saturation by `factor` (clamped to valid RGB). Operates in HSV:
+/// keeps hue and value, multiplies saturation. A neutral (grey) color is unchanged.
+fn saturate(c: Rgb, factor: f32) -> Rgb {
+    let max = c.r.max(c.g).max(c.b);
+    let min = c.r.min(c.g).min(c.b);
+    if max == min {
+        return c; // grey — no hue to saturate
+    }
+    let v = f32::from(max);
+    let s = (f32::from(max - min) / v * factor).clamp(0.0, 1.0); // new saturation
+    // Rebuild each channel toward `v` keeping its relative position between min..max.
+    let lift = |ch: u8| {
+        let frac = f32::from(ch - min) / f32::from(max - min); // 0..1 within the spread
+        let lo = v * (1.0 - s);
+        (lo + frac * (v - lo)).round().clamp(0.0, 255.0) as u8
+    };
+    Rgb { r: lift(c.r), g: lift(c.g), b: lift(c.b) }
 }
 
 /// Most common color over the region, quantized to 2 bits/channel (64 bins).
@@ -223,6 +242,24 @@ mod tests {
     #[test]
     fn to_u32_packs_rrggbb() {
         assert_eq!(Rgb { r: 0x12, g: 0x34, b: 0x56 }.to_u32(), 0x123456);
+    }
+
+    #[test]
+    fn saturated_is_more_saturated_than_plain_average() {
+        // A muted color: average stays muted, AverageSaturated pushes saturation up.
+        let buf = solid(8, 8, 150, 120, 100);
+        let avg = extract(&buf, 8 * 4, (0, 0, 8, 8), ExtractMode::Average);
+        let sat = extract(&buf, 8 * 4, (0, 0, 8, 8), ExtractMode::AverageSaturated);
+        let spread = |c: Rgb| c.r.max(c.g).max(c.b) - c.r.min(c.g).min(c.b);
+        assert!(spread(sat) > spread(avg), "avg {avg:?} sat {sat:?}");
+    }
+
+    #[test]
+    fn saturated_keeps_grey_grey() {
+        // Zero-saturation input has nothing to boost; stays neutral.
+        let buf = solid(4, 4, 128, 128, 128);
+        let sat = extract(&buf, 4 * 4, (0, 0, 4, 4), ExtractMode::AverageSaturated);
+        assert_eq!(sat, Rgb { r: 128, g: 128, b: 128 });
     }
 
     #[test]
