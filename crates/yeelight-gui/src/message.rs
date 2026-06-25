@@ -256,6 +256,35 @@ pub(crate) enum Message {
         /// The session handle or an error string.
         session: Result<MusicSession, String>,
     },
+    /// Start or stop ambient screen-capture mode for the selected device.
+    AmbientToggle,
+    /// A resolved ambient sink is ready (music started or fell back to direct), or failed.
+    AmbientStarted {
+        /// Device id the session belongs to.
+        id: String,
+        /// The sink to drive the bulb, or an error string.
+        sink: Result<crate::ambient::AmbientSink, String>,
+    },
+    /// Change the ambient capture region for the selected device.
+    AmbientSetRegion(crate::ambient::color::Region),
+    /// Change the ambient extraction mode for the selected device.
+    AmbientSetMode(crate::ambient::color::ExtractMode),
+    /// Toggle an ambient target light (`main` = main light, else background).
+    AmbientSetTarget {
+        /// Main light if true, else background.
+        main: bool,
+        /// Enable that target.
+        on: bool,
+    },
+    /// Change the ambient capture monitor (None = primary). Only while stopped.
+    AmbientSetMonitor(Option<u32>),
+    /// An ambient send failed (surfaced in the status bar).
+    AmbientError {
+        /// Device id.
+        id: String,
+        /// Error text.
+        error: String,
+    },
     /// A control was activated for the selected device.
     Command {
         /// Background light?

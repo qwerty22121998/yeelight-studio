@@ -115,6 +115,17 @@ pub(crate) struct TimerState {
     pub(crate) remaining: Option<u32>,
 }
 
+/// A running ambient session: the live-config sender (cloned into the driver) plus
+/// the resolved sink.
+pub(crate) struct AmbientRun {
+    /// Pushes live region/mode/target edits to the running driver.
+    pub(crate) cfg_tx: tokio::sync::watch::Sender<crate::ambient::AmbientConfig>,
+    /// The sink the driver sends through.
+    pub(crate) sink: crate::ambient::AmbientSink,
+    /// Fixed capture monitor (recipe key — changing it restarts capture).
+    pub(crate) monitor_id: Option<u32>,
+}
+
 /// Bottom-bar status line.
 #[derive(Default)]
 pub(crate) enum Status {
@@ -168,6 +179,15 @@ pub(crate) struct App {
     pub(crate) timers: HashMap<String, TimerState>,
     /// Active music sessions per device id (instant-control mode).
     pub(crate) music: HashMap<String, crate::message::MusicSession>,
+    /// Active ambient sessions per device id (presence = running). Holds the live
+    /// config sender (region/mode/targets) and the resolved sink.
+    pub(crate) ambient: HashMap<String, AmbientRun>,
+    /// Per-device ambient UI selections, persisted across tab switches even when stopped.
+    pub(crate) ambient_cfg: HashMap<String, crate::ambient::AmbientConfig>,
+    /// Cached display list for the ambient monitor picker. Enumerating spawns a subprocess
+    /// (`hyprctl`/scap), so it's resolved at startup and on each scan, not per redraw.
+    // ponytail: refreshed on scan, not hot-plug. Rescan to pick up a plugged/unplugged display.
+    pub(crate) monitors: Vec<crate::ambient::capture::Monitor>,
     /// Last local interaction per device id; gates notification reconciliation
     /// (see [`SYNC_DEBOUNCE`]).
     pub(crate) last_input: HashMap<String, Instant>,
@@ -206,6 +226,9 @@ impl Default for App {
             timer_input: HashMap::new(),
             timers: HashMap::new(),
             music: HashMap::new(),
+            ambient: HashMap::new(),
+            ambient_cfg: HashMap::new(),
+            monitors: Vec::new(),
             last_input: HashMap::new(),
             logs: VecDeque::new(),
             log_paused: false,
@@ -257,6 +280,8 @@ impl App {
         self.scanning = true;
         self.scan_progress = 0.0;
         self.status = Status::Ok("scanning…".into());
+        // Refresh the display list while we're enumerating the LAN (cheap, user-initiated).
+        self.monitors = crate::ambient::capture::monitors();
         let secs = self.timeout_secs.max(1) as u64;
         Task::perform(
             async move {
@@ -570,6 +595,47 @@ impl App {
                 }
                 Task::none()
             }
+            Message::AmbientToggle => self.ambient_toggle(),
+            Message::AmbientStarted { id, sink } => {
+                match sink {
+                    Ok(sink) => {
+                        let cfg = self.ambient_cfg.get(&id).cloned().unwrap_or_default();
+                        let (cfg_tx, _) = tokio::sync::watch::channel(cfg.clone());
+                        // Register the music session (whether ambient reused or opened it) as
+                        // the shared instant-mode session, so the Music tab reflects it and a
+                        // manual toggle reuses it instead of opening a second connection.
+                        if let Some(music) = &sink.music {
+                            self.music.entry(id.clone()).or_insert_with(|| music.clone());
+                        }
+                        self.ambient.insert(
+                            id,
+                            AmbientRun { cfg_tx, sink, monitor_id: cfg.monitor_id },
+                        );
+                        self.status = Status::Ok("ambient on".into());
+                    }
+                    Err(e) => {
+                        self.status = Status::Err(format!("ambient: {e}"));
+                    }
+                }
+                Task::none()
+            }
+            Message::AmbientSetRegion(region) => self.ambient_edit(|c| c.region = region),
+            Message::AmbientSetMode(mode) => self.ambient_edit(|c| c.mode = mode),
+            Message::AmbientSetTarget { main, on } => {
+                self.ambient_edit(|c| if main { c.main = on } else { c.bg = on })
+            }
+            Message::AmbientSetMonitor(monitor_id) => {
+                // Monitor is fixed while running; only takes effect on next start.
+                if let Some(id) = self.selected_id() {
+                    self.ambient_cfg.entry(id).or_default().monitor_id = monitor_id;
+                }
+                Task::none()
+            }
+            Message::AmbientError { id, error } => {
+                tracing::warn!(%id, %error, "ambient send failed");
+                self.status = Status::Err(format!("ambient: {error}"));
+                Task::none()
+            }
             Message::Listening { id, client } => {
                 // Offline/unreachable devices are skipped: the tab still works, it
                 // just won't show live external changes. or_insert avoids clobbering
@@ -700,8 +766,11 @@ impl App {
             Message::StateChanged { id, params } => {
                 // Reconcile the controls from device truth, unless the user just
                 // touched this device (debounce) — otherwise a notification mid-drag,
-                // or the device echoing our own command, would yank the sliders.
-                let fresh = self.last_input.get(&id).is_none_or(|t| t.elapsed() >= SYNC_DEBOUNCE);
+                // or the device echoing our own command, would yank the sliders. Ambient
+                // streams color several times/sec, so suppress reconciliation entirely
+                // while it runs, else its echoes would yank the pickers continuously.
+                let fresh = !self.ambient.contains_key(&id)
+                    && self.last_input.get(&id).is_none_or(|t| t.elapsed() >= SYNC_DEBOUNCE);
                 tracing::debug!(%id, ?params, fresh, "props notification");
                 let Some(d) = self.devices.iter_mut().find(|d| d.id == id) else {
                     return Task::none();
@@ -892,6 +961,116 @@ impl App {
         )
     }
 
+    /// Apply an edit to the selected device's ambient config and, if running, push it
+    /// live to the driver (no restart). Persists to `ambient_cfg` either way.
+    fn ambient_edit(&mut self, f: impl FnOnce(&mut crate::ambient::AmbientConfig)) -> Task<Message> {
+        let Some(id) = self.selected_id() else { return Task::none() };
+        let cfg = self.ambient_cfg.entry(id.clone()).or_default();
+        f(cfg);
+        let updated = cfg.clone();
+        if let Some(run) = self.ambient.get(&id) {
+            let _ = run.cfg_tx.send(updated); // live reconfigure
+        }
+        Task::none()
+    }
+
+    /// Start or stop ambient mode for the selected device.
+    fn ambient_toggle(&mut self) -> Task<Message> {
+        let Some(id) = self.selected_id() else { return Task::none() };
+
+        // Running → stop: drop the session (subscription ends → capture stops). Any music
+        // session is left up as the shared instant-mode session — tearing it down here would
+        // kill instant mode if the Music tab is also using it. The user turns it off there.
+        if self.ambient.remove(&id).is_some() {
+            self.status = Status::Ok("ambient off".into());
+            return Task::none();
+        }
+
+        // Stopped → start. Need a connected client (like music_toggle).
+        let Some(client) = self.clients.get(&id).cloned() else {
+            self.status =
+                Status::Err("connect first (use a control), then enable ambient".into());
+            return Task::none();
+        };
+
+        // Resolve capability booleans up front (owned) so later `self.status = ..` mutations
+        // don't conflict with a borrow of `self.devices`.
+        let (has_music, caps) = {
+            let device = &self.devices[self.selected.unwrap()];
+            let has = |m: &str| self.force_all || device.supports(m);
+            (
+                has("set_music"),
+                crate::ambient::Caps {
+                    main_rgb: has("set_rgb"),
+                    main_ct: has("set_ct_abx"),
+                    bg_rgb: has("bg_set_rgb"),
+                    bg_ct: has("bg_set_ct_abx"),
+                },
+            )
+        };
+        // Ambient drives any color-capable target — rgb or temperature.
+        let has_color = caps.main_rgb || caps.main_ct || caps.bg_rgb || caps.bg_ct;
+
+        // Seed a default config (so the UI and the AmbientStarted handler agree) with targets
+        // reconciled to what this bulb can actually color — preferring main, else bg. Only on
+        // first creation, so it never clobbers a returning user's explicit target choices.
+        self.ambient_cfg.entry(id.clone()).or_insert_with(|| {
+            let (main, bg) = crate::ambient::default_targets(caps);
+            crate::ambient::AmbientConfig { main, bg, ..Default::default() }
+        });
+
+        // Prefer an existing music session; else start one if supported; else go direct.
+        if let Some(music) = self.music.get(&id).cloned() {
+            let sink = crate::ambient::AmbientSink { client, music: Some(music), caps };
+            self.status = Status::Ok("ambient on (music)".into());
+            return Task::done(Message::AmbientStarted { id, sink: Ok(sink) });
+        }
+
+        if has_music {
+            self.status = Status::Ok("ambient: starting music…".into());
+            let c = Arc::clone(&client);
+            return Task::perform(
+                async move {
+                    MusicConnection::start(&c, DEFAULT_MUSIC_PORT)
+                        .await
+                        .map(|m| Arc::new(tokio::sync::Mutex::new(m)))
+                        .map_err(|e| e.to_string())
+                },
+                move |res| match res {
+                    Ok(music) => Message::AmbientStarted {
+                        id: id.clone(),
+                        sink: Ok(crate::ambient::AmbientSink {
+                            client: Arc::clone(&client),
+                            music: Some(music),
+                            caps,
+                        }),
+                    },
+                    // Music handshake failed: degrade to the direct (rate-limited) sink if the
+                    // bulb has any color control, rather than failing the whole feature (spec).
+                    Err(_) if has_color => Message::AmbientStarted {
+                        id: id.clone(),
+                        sink: Ok(crate::ambient::AmbientSink {
+                            client: Arc::clone(&client),
+                            music: None,
+                            caps,
+                        }),
+                    },
+                    Err(e) => Message::AmbientStarted { id: id.clone(), sink: Err(e) },
+                },
+            );
+        }
+
+        // Direct fallback — needs at least one color-capable target.
+        if has_color {
+            let sink = crate::ambient::AmbientSink { client, music: None, caps };
+            self.status = Status::Ok("ambient on (fallback 2fps)".into());
+            return Task::done(Message::AmbientStarted { id, sink: Ok(sink) });
+        }
+
+        self.status = Status::Err("device has no color control for ambient".into());
+        Task::none()
+    }
+
     /// Run a one-shot async operation against the selected device's client.
     ///
     /// If a cached client exists it is reused; otherwise a temporary connection is
@@ -950,6 +1129,17 @@ impl App {
             subs.push(Subscription::run_with(
                 LogSub { id: id.clone(), client: Arc::clone(client) },
                 build_log_stream,
+            ));
+        }
+        for (id, run) in &self.ambient {
+            subs.push(Subscription::run_with(
+                AmbientSub {
+                    id: id.clone(),
+                    monitor_id: run.monitor_id,
+                    sink: run.sink.clone(),
+                    cfg_rx: run.cfg_tx.subscribe(),
+                },
+                build_ambient_stream,
             ));
         }
         if self.scanning {
@@ -1013,6 +1203,28 @@ fn build_log_stream(sub: &LogSub) -> Pin<Box<dyn Stream<Item = Message> + Send>>
         })
     });
     Box::pin(stream)
+}
+
+/// Subscription key + source for one device's ambient driver. Hashed by
+/// `(id, monitor_id)` so region/mode/target edits (pushed via the cfg channel) do not
+/// restart capture, but switching monitor does.
+struct AmbientSub {
+    id: String,
+    monitor_id: Option<u32>,
+    sink: crate::ambient::AmbientSink,
+    cfg_rx: tokio::sync::watch::Receiver<crate::ambient::AmbientConfig>,
+}
+
+impl Hash for AmbientSub {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+        self.monitor_id.hash(state);
+    }
+}
+
+/// Build the ambient driver stream for a device (delegates to the ambient module).
+fn build_ambient_stream(sub: &AmbientSub) -> Pin<Box<dyn Stream<Item = Message> + Send>> {
+    crate::ambient::run_stream(sub.id.clone(), sub.sink.clone(), sub.cfg_rx.clone())
 }
 
 /// Open (creating parent dirs) the command log for appending. Best-effort: any

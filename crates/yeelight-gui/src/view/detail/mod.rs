@@ -2,6 +2,7 @@
 //! gets the full tabbed surface; the background light (when supported) gets its
 //! own clearly separated section with power, brightness, and color/white.
 
+pub(crate) mod ambient;
 pub(crate) mod color;
 pub(crate) mod flow;
 pub(crate) mod light;
@@ -82,6 +83,15 @@ pub(crate) fn pane(app: &App) -> Element<'_, Message> {
     let mut col = column![header(app, d), light_section(app, d, false)].spacing(16);
     if bg_supported(app, d) {
         col = col.push(light_section(app, d, true));
+    }
+    // Ambient is device-wide (one screen capture → main and/or bg), so it gets its own
+    // section rather than a per-light tab. Shown when either light advertises any color
+    // control (rgb, or temperature for white-only bulbs).
+    if ["set_rgb", "bg_set_rgb", "set_ct_abx", "bg_set_ct_abx"]
+        .iter()
+        .any(|m| enabled(app, d, m))
+    {
+        col = col.push(section_box(ambient::body(app, d)));
     }
 
     container(scrollable(col))

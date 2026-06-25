@@ -23,3 +23,9 @@ toml = "0.8"
 tokio = { version = "1", features = ["sync"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Linux/Wayland captures via the `grim` CLI (wlr-screencopy) — scap's pipewire-portal
+# engine dies instantly on wlroots compositors (proven: 0 frames, closed channel). Other
+# platforms keep scap (ScreenCaptureKit / DXGI), which works there.
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+scap = { package = "scap-rs", version = "0.1.0" }
