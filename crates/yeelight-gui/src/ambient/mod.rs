@@ -117,17 +117,14 @@ pub(crate) fn run_stream(
         }
     };
 
-    let fps = sink.fps();
-    let period = Duration::from_millis(1000 / fps);
-
     struct State {
         id: String,
         sink: AmbientSink,
         cfg_rx: watch::Receiver<AmbientConfig>,
         rgb_rx: watch::Receiver<Rgb>,
         last_sent: Option<Rgb>,
-        period: Duration,
         powered_on: bool,
+        errored: bool,
         _guard: capture::CaptureGuard, // stops capture on drop
     }
 
@@ -136,19 +133,37 @@ pub(crate) fn run_stream(
         sink,
         cfg_rx,
         rgb_rx,
-        last_sent: None,
-        period,
+        // Seed with black so the initial (pre-first-frame) black is deduped, not flashed.
+        last_sent: Some(Rgb::BLACK),
         powered_on: false,
+        errored: false,
         _guard: guard,
     };
 
     let driver = stream::unfold(state, |mut st| async move {
         loop {
-            tokio::time::sleep(st.period).await;
+            let cfg = st.cfg_rx.borrow().clone();
 
-            // Turn the light on once so set_rgb isn't a no-op (spec: only when on).
+            // Pace the loop. Music has no quota. The direct path issues one command per
+            // enabled target per tick, so stretch the period by the target count to keep
+            // the total under the device's LAN command ceiling (2 fps × 2 targets would
+            // otherwise be 240 cmd/min, over ~144).
+            let base = Duration::from_millis(1000 / st.sink.fps());
+            let period = if st.sink.music.is_some() {
+                base
+            } else {
+                base * (u32::from(cfg.main) + u32::from(cfg.bg)).max(1)
+            };
+            tokio::time::sleep(period).await;
+
+            // Power the enabled target(s) on once so set_rgb isn't a no-op (spec: only when on).
             if !st.powered_on {
-                let _ = st.sink.client.set_power(true, Effect::Sudden, None).await;
+                if cfg.main {
+                    let _ = st.sink.client.set_power(true, Effect::Sudden, None).await;
+                }
+                if cfg.bg {
+                    let _ = st.sink.client.bg_set_power(true, Effect::Sudden, None).await;
+                }
                 st.powered_on = true;
             }
 
@@ -159,14 +174,19 @@ pub(crate) fn run_stream(
                 continue; // unchanged enough — skip, save quota / traffic
             }
 
-            let cfg = st.cfg_rx.borrow().clone();
             match st.sink.send(rgb, cfg.main, cfg.bg).await {
                 Ok(()) => {
                     st.last_sent = Some(rgb);
+                    st.errored = false;
                 }
                 Err(e) => {
-                    let id = st.id.clone();
-                    return Some((Message::AmbientError { id, error: e }, st));
+                    // Emit one error per failure streak (a dead bulb shouldn't spam the
+                    // status bar every tick); keep retrying at the loop's pace.
+                    if !st.errored {
+                        st.errored = true;
+                        let id = st.id.clone();
+                        return Some((Message::AmbientError { id, error: e }, st));
+                    }
                 }
             }
         }

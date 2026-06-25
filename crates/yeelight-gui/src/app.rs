@@ -1024,6 +1024,13 @@ impl App {
                         }),
                         own_music: true,
                     },
+                    // Music handshake failed: degrade to the direct (rate-limited) sink if the
+                    // bulb has RGB, rather than failing the whole feature (spec).
+                    Err(_) if has_rgb => Message::AmbientStarted {
+                        id: id.clone(),
+                        sink: Ok(crate::ambient::AmbientSink { client: Arc::clone(&client), music: None }),
+                        own_music: false,
+                    },
                     Err(e) => Message::AmbientStarted { id: id.clone(), sink: Err(e), own_music: false },
                 },
             );
