@@ -68,6 +68,10 @@ pub(crate) enum DetailTab {
     Timer,
     /// Music "instant control" mode.
     Music,
+    /// Ambient screen-capture mode.
+    // Constructed by the Ambient tab view (a later task), not in this chunk yet.
+    #[allow(dead_code)]
+    Ambient,
 }
 
 /// Which editable field of a custom flow-editor row changed.
@@ -255,6 +259,44 @@ pub(crate) enum Message {
         id: String,
         /// The session handle or an error string.
         session: Result<MusicSession, String>,
+    },
+    /// Start or stop ambient screen-capture mode for the selected device.
+    // The Ambient*-emitting variants below are constructed by the Ambient tab view
+    // (a later task); allow dead code until that lands.
+    #[allow(dead_code)]
+    AmbientToggle,
+    /// A resolved ambient sink is ready (music started or fell back to direct), or failed.
+    AmbientStarted {
+        /// Device id the session belongs to.
+        id: String,
+        /// The sink to drive the bulb, or an error string.
+        sink: Result<crate::ambient::AmbientSink, String>,
+        /// Whether ambient started this music session itself (so it stops it on toggle-off).
+        own_music: bool,
+    },
+    /// Change the ambient capture region for the selected device.
+    #[allow(dead_code)]
+    AmbientSetRegion(crate::ambient::color::Region),
+    /// Change the ambient extraction mode for the selected device.
+    #[allow(dead_code)]
+    AmbientSetMode(crate::ambient::color::ExtractMode),
+    /// Toggle an ambient target light (`main` = main light, else background).
+    #[allow(dead_code)]
+    AmbientSetTarget {
+        /// Main light if true, else background.
+        main: bool,
+        /// Enable that target.
+        on: bool,
+    },
+    /// Change the ambient capture monitor (None = primary). Only while stopped.
+    #[allow(dead_code)]
+    AmbientSetMonitor(Option<u32>),
+    /// An ambient send failed (surfaced in the status bar).
+    AmbientError {
+        /// Device id.
+        id: String,
+        /// Error text.
+        error: String,
     },
     /// A control was activated for the selected device.
     Command {
