@@ -107,6 +107,8 @@ pub(crate) fn crop_bounds(region: Region, w: u32, h: u32) -> (u32, u32, u32, u32
 }
 
 /// Reduce the cropped region of a BGRA `buf` (row pitch `stride` bytes) to one color.
+/// Used by the `scap` capture path (non-Linux); Linux uses [`extract_rgb`].
+#[cfg(any(not(target_os = "linux"), test))]
 pub(crate) fn extract(buf: &[u8], stride: usize, bounds: (u32, u32, u32, u32), mode: ExtractMode) -> Rgb {
     match mode {
         ExtractMode::Average => average(buf, stride, bounds),
@@ -116,6 +118,7 @@ pub(crate) fn extract(buf: &[u8], stride: usize, bounds: (u32, u32, u32, u32), m
 }
 
 /// Mean RGB over the cropped region. BGRA byte order: `[B, G, R, A]`.
+#[cfg(any(not(target_os = "linux"), test))]
 fn average(buf: &[u8], stride: usize, (x, y, w, h): (u32, u32, u32, u32)) -> Rgb {
     let (mut sr, mut sg, mut sb, mut n) = (0u64, 0u64, 0u64, 0u64);
     for row in y..y + h {
@@ -158,6 +161,7 @@ fn saturate(c: Rgb, factor: f32) -> Rgb {
 
 /// Most common color over the region, quantized to 2 bits/channel (64 bins).
 /// Returns the populated bin's center color.
+#[cfg(any(not(target_os = "linux"), test))]
 fn dominant(buf: &[u8], stride: usize, (x, y, w, h): (u32, u32, u32, u32)) -> Rgb {
     let mut bins = [0u32; 64];
     for row in y..y + h {
@@ -174,6 +178,71 @@ fn dominant(buf: &[u8], stride: usize, (x, y, w, h): (u32, u32, u32, u32)) -> Rg
     }
     let best = bins.iter().enumerate().max_by_key(|&(_, c)| *c).map_or(0, |(i, _)| i) as u8;
     let center = |level: u8| level.saturating_mul(64).saturating_add(32); // bin center
+    Rgb {
+        r: center((best >> 4) & 0b11),
+        g: center((best >> 2) & 0b11),
+        b: center(best & 0b11),
+    }
+}
+
+/// Reduce the cropped region of a packed-RGB `buf` (row pitch `stride` bytes, 3 bytes/px
+/// in `R, G, B` order) to one color. Twin of [`extract`] for the `grim` capture path,
+/// which returns PPM pixels (RGB) instead of BGRA.
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn extract_rgb(
+    buf: &[u8],
+    stride: usize,
+    bounds: (u32, u32, u32, u32),
+    mode: ExtractMode,
+) -> Rgb {
+    match mode {
+        ExtractMode::Average => average_rgb(buf, stride, bounds),
+        ExtractMode::Dominant => dominant_rgb(buf, stride, bounds),
+        ExtractMode::AverageSaturated => saturate(average_rgb(buf, stride, bounds), 1.4),
+    }
+}
+
+/// Mean RGB over the cropped region. RGB byte order: `[R, G, B]`.
+#[cfg(any(target_os = "linux", test))]
+fn average_rgb(buf: &[u8], stride: usize, (x, y, w, h): (u32, u32, u32, u32)) -> Rgb {
+    let (mut sr, mut sg, mut sb, mut n) = (0u64, 0u64, 0u64, 0u64);
+    for row in y..y + h {
+        let base = row as usize * stride;
+        for col in x..x + w {
+            let i = base + col as usize * 3;
+            if i + 2 >= buf.len() {
+                continue;
+            }
+            sr += u64::from(buf[i]);
+            sg += u64::from(buf[i + 1]);
+            sb += u64::from(buf[i + 2]);
+            n += 1;
+        }
+    }
+    if n == 0 {
+        return Rgb::BLACK;
+    }
+    Rgb { r: (sr / n) as u8, g: (sg / n) as u8, b: (sb / n) as u8 }
+}
+
+/// Most common RGB color over the region, quantized to 2 bits/channel. RGB byte order.
+#[cfg(any(target_os = "linux", test))]
+fn dominant_rgb(buf: &[u8], stride: usize, (x, y, w, h): (u32, u32, u32, u32)) -> Rgb {
+    let mut bins = [0u32; 64];
+    for row in y..y + h {
+        let base = row as usize * stride;
+        for col in x..x + w {
+            let i = base + col as usize * 3;
+            if i + 2 >= buf.len() {
+                continue;
+            }
+            let q = |v: u8| (u16::from(v) >> 6) & 0b11; // 0..=3
+            let bin = (q(buf[i]) << 4) | (q(buf[i + 1]) << 2) | q(buf[i + 2]); // r,g,b
+            bins[bin as usize] += 1;
+        }
+    }
+    let best = bins.iter().enumerate().max_by_key(|&(_, c)| *c).map_or(0, |(i, _)| i) as u8;
+    let center = |level: u8| level.saturating_mul(64).saturating_add(32);
     Rgb {
         r: center((best >> 4) & 0b11),
         g: center((best >> 2) & 0b11),
@@ -260,6 +329,27 @@ mod tests {
         let buf = solid(4, 4, 128, 128, 128);
         let sat = extract(&buf, 4 * 4, (0, 0, 4, 4), ExtractMode::AverageSaturated);
         assert_eq!(sat, Rgb { r: 128, g: 128, b: 128 });
+    }
+
+    #[test]
+    fn average_rgb_solid_and_cropped() {
+        // Tight RGB buffer: left 5 cols red, right 5 cols blue. Whole avg blends; the
+        // Right band must read pure blue.
+        let (w, h) = (10u32, 4u32);
+        let mut buf = vec![0u8; (w * h * 3) as usize];
+        for row in 0..h {
+            for col in 0..w {
+                let i = (row * w + col) as usize * 3;
+                let (r, g, b) = if col < 5 { (255, 0, 0) } else { (0, 0, 255) };
+                buf[i] = r;
+                buf[i + 1] = g;
+                buf[i + 2] = b;
+            }
+        }
+        let stride = (w * 3) as usize;
+        assert_eq!(average_rgb(&buf, stride, (0, 0, w, h)), Rgb { r: 127, g: 0, b: 127 });
+        let right = extract_rgb(&buf, stride, crop_bounds(Region::Right, w, h), ExtractMode::Average);
+        assert_eq!(right, Rgb { r: 0, g: 0, b: 255 });
     }
 
     #[test]

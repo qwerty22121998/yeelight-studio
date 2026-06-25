@@ -65,14 +65,15 @@ cargo run -p yeelight-gui   # discover and control bulbs from a window
 The GUI's **Ambient** tab mirrors a screen region's color onto the bulb in real time. Pick a
 region (whole / top / bottom / left / right), an extraction mode (average / dominant /
 average+saturation), and which light(s) to drive; it streams over music mode at ~15 fps when
-available, otherwise falls back to rate-limited `set_rgb` at ~2 fps. It uses the `scap-rs`
-crate (a maintained scap fork on the PipeWire 0.10 bindings) for cross-platform capture.
+available, otherwise falls back to rate-limited `set_rgb` at ~2 fps. Targets that only support
+color temperature (white-only bulbs) are driven by a warm/cool K mapping instead of full RGB.
 
-- **Linux:** build needs `libclang` (`clang`); runtime needs `pipewire` and
-  `xdg-desktop-portal` plus your compositor's backend (e.g. `xdg-desktop-portal-hyprland`).
-  The first capture per launch shows a screen-share dialog — approve it.
-- **macOS:** grant Screen Recording permission on first use.
-- **Windows:** no prompt (a capture border may appear).
+- **Linux (Wayland):** captures via the `grim` CLI (wlr-screencopy), so install `grim`.
+  Monitor enumeration uses `hyprctl` (Hyprland); other wlroots compositors capture fine but
+  the multi-monitor picker won't list displays. No PipeWire/portal and no screen-share dialog.
+- **macOS / Windows:** capture via `scap-rs` (ScreenCaptureKit / DXGI); build needs `libclang`
+  (`clang`). macOS prompts for Screen Recording permission on first use; Windows shows no
+  prompt (a capture border may appear).
 
 ## Development
 

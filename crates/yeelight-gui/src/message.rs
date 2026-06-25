@@ -264,8 +264,6 @@ pub(crate) enum Message {
         id: String,
         /// The sink to drive the bulb, or an error string.
         sink: Result<crate::ambient::AmbientSink, String>,
-        /// Whether ambient started this music session itself (so it stops it on toggle-off).
-        own_music: bool,
     },
     /// Change the ambient capture region for the selected device.
     AmbientSetRegion(crate::ambient::color::Region),

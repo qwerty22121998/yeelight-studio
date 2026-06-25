@@ -7,8 +7,7 @@ use iced::widget::{button, checkbox, column, pick_list, row, text};
 use iced::{Color, Element};
 use yeelight_core::Device;
 
-use super::enabled;
-use crate::ambient::capture;
+use super::color_modes;
 use crate::ambient::color::{ExtractMode, Region};
 use crate::app::App;
 use crate::message::Message;
@@ -21,19 +20,25 @@ pub(crate) fn body<'a>(app: &'a App, d: &'a Device) -> Element<'a, Message> {
     let region = pick_list(Region::ALL, Some(cfg.region), Message::AmbientSetRegion);
     let mode = pick_list(ExtractMode::ALL, Some(cfg.mode), Message::AmbientSetMode);
 
-    // Target checkboxes — each shown only if that light advertises RGB.
+    // Target checkboxes — each shown if that light has any color control. A target with
+    // only temperature support (white-only bulb) is labelled so, since ambient will drive
+    // it by warm/cool K rather than full color.
+    let (main_rgb, main_ct) = color_modes(app, d, false);
+    let (bg_rgb, bg_ct) = color_modes(app, d, true);
     let mut targets = column![].spacing(6);
-    if enabled(app, d, "set_rgb") {
+    if main_rgb || main_ct {
+        let label = if main_rgb { "Main light" } else { "Main light (temperature)" };
         targets = targets.push(
             checkbox(cfg.main)
-                .label("Main light")
+                .label(label)
                 .on_toggle(|on| Message::AmbientSetTarget { main: true, on }),
         );
     }
-    if enabled(app, d, "bg_set_rgb") {
+    if bg_rgb || bg_ct {
+        let label = if bg_rgb { "Background light" } else { "Background light (temperature)" };
         targets = targets.push(
             checkbox(cfg.bg)
-                .label("Background light")
+                .label(label)
                 .on_toggle(|on| Message::AmbientSetTarget { main: false, on }),
         );
     }
@@ -48,20 +53,19 @@ pub(crate) fn body<'a>(app: &'a App, d: &'a Device) -> Element<'a, Message> {
     .spacing(12);
 
     // Monitor picker: only when there's a choice, and only while stopped (the capture
-    // monitor is fixed at start). Selecting one sets the start-time monitor.
-    if !running {
-        let monitors = capture::monitors();
-        if monitors.len() > 1 {
-            let selected = monitors.iter().find(|m| Some(m.id) == cfg.monitor_id).cloned();
-            col = col.push(
-                row![
-                    text("Monitor").width(90),
-                    pick_list(monitors, selected, |m| Message::AmbientSetMonitor(Some(m.id))),
-                ]
-                .spacing(10)
-                .align_y(iced::Center),
-            );
-        }
+    // monitor is fixed at start). Selecting one sets the start-time monitor. The list is
+    // cached in App (enumerating spawns a subprocess) and refreshed on scan.
+    if !running && app.monitors.len() > 1 {
+        let monitors = app.monitors.clone();
+        let selected = monitors.iter().find(|m| Some(m.id) == cfg.monitor_id).cloned();
+        col = col.push(
+            row![
+                text("Monitor").width(90),
+                pick_list(monitors, selected, |m| Message::AmbientSetMonitor(Some(m.id))),
+            ]
+            .spacing(10)
+            .align_y(iced::Center),
+        );
     }
 
     let label = if running { "Stop ambient" } else { "Start ambient" };

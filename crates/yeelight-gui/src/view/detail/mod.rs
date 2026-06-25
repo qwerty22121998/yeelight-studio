@@ -85,8 +85,12 @@ pub(crate) fn pane(app: &App) -> Element<'_, Message> {
         col = col.push(light_section(app, d, true));
     }
     // Ambient is device-wide (one screen capture → main and/or bg), so it gets its own
-    // section rather than a per-light tab. Shown when either light advertises RGB.
-    if enabled(app, d, "set_rgb") || enabled(app, d, "bg_set_rgb") {
+    // section rather than a per-light tab. Shown when either light advertises any color
+    // control (rgb, or temperature for white-only bulbs).
+    if ["set_rgb", "bg_set_rgb", "set_ct_abx", "bg_set_ct_abx"]
+        .iter()
+        .any(|m| enabled(app, d, m))
+    {
         col = col.push(section_box(ambient::body(app, d)));
     }
 
