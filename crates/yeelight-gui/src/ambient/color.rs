@@ -110,7 +110,7 @@ pub(crate) fn crop_bounds(region: Region, w: u32, h: u32) -> (u32, u32, u32, u32
 pub(crate) fn extract(buf: &[u8], stride: usize, bounds: (u32, u32, u32, u32), mode: ExtractMode) -> Rgb {
     match mode {
         ExtractMode::Average => average(buf, stride, bounds),
-        ExtractMode::Dominant => Rgb::BLACK,           // implemented in sub-step 2
+        ExtractMode::Dominant => dominant(buf, stride, bounds),
         ExtractMode::AverageSaturated => Rgb::BLACK,   // implemented in sub-step 3
     }
 }
@@ -135,6 +135,31 @@ fn average(buf: &[u8], stride: usize, (x, y, w, h): (u32, u32, u32, u32)) -> Rgb
         return Rgb::BLACK;
     }
     Rgb { r: (sr / n) as u8, g: (sg / n) as u8, b: (sb / n) as u8 }
+}
+
+/// Most common color over the region, quantized to 2 bits/channel (64 bins).
+/// Returns the populated bin's center color.
+fn dominant(buf: &[u8], stride: usize, (x, y, w, h): (u32, u32, u32, u32)) -> Rgb {
+    let mut bins = [0u32; 64];
+    for row in y..y + h {
+        let base = row as usize * stride;
+        for col in x..x + w {
+            let i = base + col as usize * 4;
+            if i + 2 >= buf.len() {
+                continue;
+            }
+            let q = |v: u8| (u16::from(v) >> 6) & 0b11; // 0..=3
+            let bin = (q(buf[i + 2]) << 4) | (q(buf[i + 1]) << 2) | q(buf[i]); // r,g,b
+            bins[bin as usize] += 1;
+        }
+    }
+    let best = bins.iter().enumerate().max_by_key(|&(_, c)| *c).map_or(0, |(i, _)| i) as u8;
+    let center = |level: u8| level.saturating_mul(64).saturating_add(32); // bin center
+    Rgb {
+        r: center((best >> 4) & 0b11),
+        g: center((best >> 2) & 0b11),
+        b: center(best & 0b11),
+    }
 }
 
 #[cfg(test)]
@@ -198,5 +223,14 @@ mod tests {
     #[test]
     fn to_u32_packs_rrggbb() {
         assert_eq!(Rgb { r: 0x12, g: 0x34, b: 0x56 }.to_u32(), 0x123456);
+    }
+
+    #[test]
+    fn dominant_picks_majority_color() {
+        // 8 of 9 px green, 1 px red → dominant bin is green-ish.
+        let mut buf = solid(3, 3, 0, 200, 0);
+        buf[0] = 0; buf[1] = 0; buf[2] = 255; // pixel 0 → red
+        let got = extract(&buf, 3 * 4, (0, 0, 3, 3), ExtractMode::Dominant);
+        assert!(got.g > 150 && got.r < 80 && got.b < 80, "got {got:?}");
     }
 }
