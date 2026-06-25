@@ -1,6 +1,7 @@
-//! Ambient tab: pick a screen region + extraction mode + target light(s) (+ monitor when
+//! Ambient section: pick a screen region + extraction mode + target light(s) (+ monitor when
 //! more than one), then start streaming the screen's color to the bulb (music mode if
-//! available, else rate-limited `set_rgb`).
+//! available, else rate-limited `set_rgb`). Device-wide — its own detail-pane section, not a
+//! per-light tab, because one screen capture drives the main and/or background light.
 
 use iced::widget::{button, checkbox, column, pick_list, row, text};
 use iced::{Color, Element};
@@ -12,7 +13,7 @@ use crate::ambient::color::{ExtractMode, Region};
 use crate::app::App;
 use crate::message::Message;
 
-/// Render the Ambient tab body (main-light surface only).
+/// Render the Ambient section body (device-wide; main and/or background targets).
 pub(crate) fn body<'a>(app: &'a App, d: &'a Device) -> Element<'a, Message> {
     let running = app.ambient.contains_key(&d.id);
     let cfg = app.ambient_cfg.get(&d.id).cloned().unwrap_or_default();

@@ -27,7 +27,6 @@ const TABS: &[(&str, DetailTab)] = &[
     ("Flow", DetailTab::Flow),
     ("Timer", DetailTab::Timer),
     ("\u{26a1} Music", DetailTab::Music),
-    ("\u{1f5b5} Ambient", DetailTab::Ambient),
 ];
 
 /// Whether a control gated by `method` should be shown: the device advertises
@@ -61,7 +60,6 @@ fn tab_supported(app: &App, d: &Device, tab: DetailTab, bg: bool) -> bool {
         DetailTab::Flow => has("start_cf", "bg_start_cf"),
         DetailTab::Timer => !bg && enabled(app, d, "cron_add"),
         DetailTab::Music => !bg && enabled(app, d, "set_music"),
-        DetailTab::Ambient => !bg && (has("set_rgb", "set_rgb") || has("bg_set_rgb", "bg_set_rgb")),
     }
 }
 
@@ -85,6 +83,11 @@ pub(crate) fn pane(app: &App) -> Element<'_, Message> {
     let mut col = column![header(app, d), light_section(app, d, false)].spacing(16);
     if bg_supported(app, d) {
         col = col.push(light_section(app, d, true));
+    }
+    // Ambient is device-wide (one screen capture → main and/or bg), so it gets its own
+    // section rather than a per-light tab. Shown when either light advertises RGB.
+    if enabled(app, d, "set_rgb") || enabled(app, d, "bg_set_rgb") {
+        col = col.push(section_box(ambient::body(app, d)));
     }
 
     container(scrollable(col))
@@ -202,7 +205,6 @@ fn light_section<'a>(app: &'a App, d: &'a Device, bg: bool) -> Element<'a, Messa
             DetailTab::Flow => flow::body(app, d, bg),
             DetailTab::Timer => timer::body(app, d),
             DetailTab::Music => music::body(app, d),
-            DetailTab::Ambient => ambient::body(app, d),
         };
         col = col
             .push(tab_strip(&tabs, active, move |tab| Message::SelectDetailTab { bg, tab }))

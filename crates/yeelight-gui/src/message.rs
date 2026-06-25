@@ -68,8 +68,6 @@ pub(crate) enum DetailTab {
     Timer,
     /// Music "instant control" mode.
     Music,
-    /// Ambient screen-capture mode.
-    Ambient,
 }
 
 /// Which editable field of a custom flow-editor row changed.
