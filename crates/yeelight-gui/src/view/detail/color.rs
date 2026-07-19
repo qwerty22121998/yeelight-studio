@@ -24,7 +24,9 @@ pub(crate) fn body<'a>(app: &'a App, d: &'a Device, bg: bool) -> Element<'a, Mes
     let picker = ColorPicker::new(
         open,
         draft,
-        button(text("Change color")).on_press_maybe(press),
+        button(text("Change color"))
+            .style(crate::theme::primary_button)
+            .on_press_maybe(press),
         Message::CancelPicker { bg },
         move |color| Message::PickColor { bg, color },
     );

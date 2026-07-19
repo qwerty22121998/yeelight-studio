@@ -4,7 +4,7 @@
 //! per-light tab, because one screen capture drives the main and/or background light.
 
 use iced::widget::{button, checkbox, column, pick_list, row, text};
-use iced::{Color, Element};
+use iced::Element;
 use yeelight_core::Device;
 
 use super::color_modes;
@@ -17,8 +17,10 @@ pub(crate) fn body<'a>(app: &'a App, d: &'a Device) -> Element<'a, Message> {
     let running = app.ambient.contains_key(&d.id);
     let cfg = app.ambient_cfg.get(&d.id).cloned().unwrap_or_default();
 
-    let region = pick_list(Region::ALL, Some(cfg.region), Message::AmbientSetRegion);
-    let mode = pick_list(ExtractMode::ALL, Some(cfg.mode), Message::AmbientSetMode);
+    let region = pick_list(Region::ALL, Some(cfg.region), Message::AmbientSetRegion)
+        .style(crate::theme::pick_list);
+    let mode = pick_list(ExtractMode::ALL, Some(cfg.mode), Message::AmbientSetMode)
+        .style(crate::theme::pick_list);
 
     // Target checkboxes — each shown if that light has any color control. A target with
     // only temperature support (white-only bulb) is labelled so, since ambient will drive
@@ -44,7 +46,7 @@ pub(crate) fn body<'a>(app: &'a App, d: &'a Device) -> Element<'a, Message> {
     }
 
     let mut col = column![
-        text("\u{1f5b5} Ambient screen capture").size(16),
+        text("\u{25a3} Ambient screen capture").size(16),
         status_line(app, d, running),
         row![text("Region").width(90), region].spacing(10).align_y(iced::Center),
         row![text("Mode").width(90), mode].spacing(10).align_y(iced::Center),
@@ -75,7 +77,8 @@ pub(crate) fn body<'a>(app: &'a App, d: &'a Device) -> Element<'a, Message> {
                 pick_list(choices, Some(selected), |c| match c {
                     MonitorChoice::Primary => Message::AmbientSetMonitor(None),
                     MonitorChoice::Display(m) => Message::AmbientSetMonitor(Some(m.id)),
-                }),
+                })
+                .style(crate::theme::pick_list),
             ]
             .spacing(10)
             .align_y(iced::Center),
@@ -83,7 +86,12 @@ pub(crate) fn body<'a>(app: &'a App, d: &'a Device) -> Element<'a, Message> {
     }
 
     let label = if running { "Stop ambient" } else { "Start ambient" };
-    col.push(button(text(label)).on_press(Message::AmbientToggle)).into()
+    col.push(
+        button(text(label))
+            .style(crate::theme::primary_button)
+            .on_press(Message::AmbientToggle),
+    )
+    .into()
 }
 
 /// A monitor-picker choice: the auto/primary default (`monitor_id = None`) or a specific
@@ -109,11 +117,11 @@ fn status_line<'a>(app: &App, d: &Device, running: bool) -> Element<'a, Message>
         let on_music = app.ambient.get(&d.id).map(|r| r.sink.music.is_some()).unwrap_or(false);
         let mode = if on_music { "music \u{b7} 15fps" } else { "fallback \u{b7} 2fps" };
         text(format!("Running ({mode}). Screen color is live."))
-            .color(Color::from_rgb(0.3, 0.8, 0.5))
+            .color(crate::theme::success())
             .into()
     } else {
         text("Off. Start to mirror the screen's color onto the bulb.")
-            .color(Color::from_rgb(0.55, 0.58, 0.63))
+            .color(crate::theme::muted())
             .into()
     }
 }

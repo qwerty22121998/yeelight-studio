@@ -26,7 +26,7 @@ const TABS: &[(&str, DetailTab)] = &[
     ("Scenes", DetailTab::Scenes),
     ("Flow", DetailTab::Flow),
     ("Timer", DetailTab::Timer),
-    ("\u{26a1} Music", DetailTab::Music),
+    ("\u{266a} Music", DetailTab::Music),
 ];
 
 /// Whether a control gated by `method` should be shown: the device advertises
@@ -120,8 +120,12 @@ fn header<'a>(app: &'a App, d: &'a Device) -> Element<'a, Message> {
                 .on_input(Message::RenameEdit)
                 .on_submit(Message::RenameCommit)
                 .width(180),
-            button(text("\u{2713}")).on_press(Message::RenameCommit),
-            button(text("\u{2715}")).on_press(Message::RenameCancel),
+            button(text("\u{2713}"))
+                .style(crate::theme::primary_button)
+                .on_press(Message::RenameCommit),
+            button(text("\u{2715}"))
+                .style(crate::theme::secondary_button)
+                .on_press(Message::RenameCancel),
         ]
         .spacing(6)
         .into(),
@@ -175,7 +179,7 @@ fn light_section<'a>(app: &'a App, d: &'a Device, bg: bool) -> Element<'a, Messa
 
     let power: Element<'a, Message> = if enabled(app, d, toggle_m) || enabled(app, d, power_m) {
         button(text("\u{23fb} Toggle"))
-            .style(button::secondary)
+            .style(crate::theme::secondary_button)
             .on_press(Message::Command { bg, kind: CmdKind::Toggle })
             .into()
     } else {
@@ -255,7 +259,7 @@ fn section_box<'a>(inner: impl Into<Element<'a, Message>>) -> Element<'a, Messag
                 border: Border {
                     color: p.background.strong.color,
                     width: 1.0,
-                    radius: 8.0.into(),
+                    radius: crate::theme::RADIUS.into(),
                 },
                 ..Default::default()
             }

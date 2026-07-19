@@ -21,7 +21,12 @@ pub(crate) fn body<'a>(app: &'a App, d: &'a Device, bg: bool) -> Element<'a, Mes
     while iter.peek().is_some() {
         let mut r = row![].spacing(8);
         for (i, p) in iter.by_ref().take(3) {
-            r = r.push(button(text(p.name)).width(Fill).on_press(Message::ApplyScene { bg, index: i }));
+            r = r.push(
+                button(text(p.name))
+                    .width(Fill)
+                    .style(crate::theme::secondary_button)
+                    .on_press(Message::ApplyScene { bg, index: i }),
+            );
         }
         col = col.push(r);
     }

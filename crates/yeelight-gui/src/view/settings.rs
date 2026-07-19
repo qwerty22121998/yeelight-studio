@@ -11,7 +11,9 @@ use crate::message::{Message, SettingsTab, ThemePref};
 pub(crate) fn pane(app: &App) -> Element<'_, Message> {
     let tab = |label: &str, target: SettingsTab| {
         let marker = if app.settings_tab == target { "● " } else { "" };
-        button(text(format!("{marker}{label}"))).on_press(Message::SelectSettingsTab(target))
+        button(text(format!("{marker}{label}")))
+            .style(crate::theme::secondary_button)
+            .on_press(Message::SelectSettingsTab(target))
     };
     let tabs = row![
         tab("General", SettingsTab::General),
@@ -77,7 +79,8 @@ fn appearance(app: &App) -> Element<'_, Message> {
         .chain(std::iter::once(ThemePref::System))
         .chain(iced::Theme::ALL.iter().cloned().map(ThemePref::Fixed))
         .collect();
-    let list = pick_list(prefs, Some(app.theme_pref.clone()), Message::ThemeChanged);
+    let list = pick_list(prefs, Some(app.theme_pref.clone()), Message::ThemeChanged)
+        .style(crate::theme::pick_list);
     row![text("Theme:").width(180), list]
         .spacing(10)
         .align_y(iced::Center)

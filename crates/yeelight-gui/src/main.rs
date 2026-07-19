@@ -27,5 +27,8 @@ fn main() -> iced::Result {
         .theme(App::theme)
         .subscription(App::subscription)
         .font(iced_aw::ICED_AW_FONT_BYTES)
+        // Monospace throughout — the terminal-ish Impactor look. ponytail: system
+        // mono via Font::MONOSPACE, no bundled asset; bundle Hack if the exact face matters.
+        .default_font(iced::Font::MONOSPACE)
         .run()
 }

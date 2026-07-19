@@ -14,9 +14,14 @@ pub(crate) fn pane(app: &App) -> Element<'_, Message> {
         .on_press(Message::SelectScreen(Screen::Device));
 
     let pause = button(text(if app.log_paused { "Resume" } else { "Pause" }))
+        .style(crate::theme::secondary_button)
         .on_press(Message::LogTogglePause);
-    let clear = button(text("Clear")).on_press(Message::LogClear);
-    let open = button(text("Open log file")).on_press(Message::LogOpenFile);
+    let clear = button(text("Clear"))
+        .style(crate::theme::secondary_button)
+        .on_press(Message::LogClear);
+    let open = button(text("Open log file"))
+        .style(crate::theme::secondary_button)
+        .on_press(Message::LogOpenFile);
 
     // Device filter: "All" plus every known device id.
     let ids: Vec<String> = std::iter::once("All".to_string())
@@ -25,7 +30,8 @@ pub(crate) fn pane(app: &App) -> Element<'_, Message> {
     let selected = app.log_filter.clone().unwrap_or_else(|| "All".to_string());
     let filter = pick_list(ids, Some(selected), |s: String| {
         Message::LogFilterDevice((s != "All").then_some(s))
-    });
+    })
+    .style(crate::theme::pick_list);
 
     let toolbar = row![back, text("Command Log").size(22), pause, clear, open, filter]
         .spacing(10)

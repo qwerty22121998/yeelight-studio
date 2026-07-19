@@ -21,13 +21,11 @@ pub(crate) fn chip<'a>(label: &'a str, on: bool, msg: Message) -> Element<'a, Me
     button(text(label).size(13))
         .padding(iced::Padding::from([5u16, 12]))
         .style(move |theme: &Theme, status| {
-            let mut s = button::secondary(theme, status);
             if on {
-                s.background = Some(Background::Color(theme.palette().primary));
-                s.text_color = theme.palette().background;
+                crate::theme::primary_button(theme, status)
+            } else {
+                crate::theme::secondary_button(theme, status)
             }
-            s.border.radius = 14.0.into();
-            s
         })
         .on_press(msg)
         .into()

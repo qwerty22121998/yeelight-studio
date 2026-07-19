@@ -13,7 +13,9 @@ pub(crate) fn body<'a>(app: &'a App, d: &'a Device) -> Element<'a, Message> {
         let (m, s) = (secs / 60, secs % 60);
         return column![
             text(format!("Powering off in {m:02}:{s:02}")).size(16),
-            button(text("Cancel timer")).on_press(Message::TimerCancel),
+            button(text("Cancel timer"))
+                .style(crate::theme::secondary_button)
+                .on_press(Message::TimerCancel),
         ]
         .spacing(12)
         .into();
@@ -25,7 +27,9 @@ pub(crate) fn body<'a>(app: &'a App, d: &'a Device) -> Element<'a, Message> {
             .on_input(Message::TimerEdit)
             .on_submit(Message::TimerStart)
             .width(80),
-        button(text("Start")).on_press(Message::TimerStart),
+        button(text("Start"))
+            .style(crate::theme::primary_button)
+            .on_press(Message::TimerStart),
     ]
     .spacing(10)
     .align_y(iced::Center)

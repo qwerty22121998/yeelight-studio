@@ -35,21 +35,24 @@ pub(crate) fn view(app: &App) -> Element<'_, Message> {
             .width(Fill)
             .on_press(Message::SelectTab(i))
             .style(if selected {
-                button::primary
+                crate::theme::primary_button
             } else {
                 button::text
             });
         list = list.push(b);
     }
 
-    let scan = button(text("\u{ff0b} Scan"))
+    let scan = button(text("\u{21bb} Scan"))
         .width(Fill)
+        .style(crate::theme::secondary_button)
         .on_press_maybe((!app.scanning).then_some(Message::Scan));
     let settings = button(text("\u{2699} Settings"))
         .width(Fill)
+        .style(crate::theme::secondary_button)
         .on_press(Message::SelectScreen(Screen::Settings));
-    let logs = button(text("\u{1f4d1} Logs"))
+    let logs = button(text("\u{25a4} Logs"))
         .width(Fill)
+        .style(crate::theme::secondary_button)
         .on_press(Message::SelectScreen(Screen::Logging));
 
     container(

@@ -45,14 +45,21 @@ pub(crate) fn body<'a>(app: &'a App, d: &'a Device, bg: bool) -> Element<'a, Mes
         }
         let colors = preset_colors(&(p.make)().0);
         let cell = column![
-            button(text(p.name)).width(96).on_press(Message::ApplyFlowPreset { bg, index: i }),
+            button(text(p.name))
+                .width(96)
+                .style(crate::theme::secondary_button)
+                .on_press(Message::ApplyFlowPreset { bg, index: i }),
             spectrum(&colors, Length::Fixed(96.0), 6.0),
         ]
         .spacing(4);
         presets = presets.push(cell);
     }
     presets = presets.push(Space::new().width(Fill));
-    presets = presets.push(button(text("Stop")).on_press(Message::StopFlow { bg }));
+    presets = presets.push(
+        button(text("Stop"))
+            .style(crate::theme::secondary_button)
+            .on_press(Message::StopFlow { bg }),
+    );
 
     // Step modes the light can actually do (Sleep always; Color/Temp gated).
     let (has_rgb, has_ct) = modes;
@@ -86,14 +93,17 @@ pub(crate) fn body<'a>(app: &'a App, d: &'a Device, bg: bool) -> Element<'a, Mes
                             let m = MODES.iter().find(|(name, _)| *name == n).map(|(_, m)| *m).unwrap_or(1);
                             Message::FlowRowEdit { bg, row: i, field: FlowField::Mode, value: m.to_string() }
                         },
-                    ),
+                    )
+                    .style(crate::theme::pick_list),
                     text_input("value", &r.value)
                         .on_input(move |v| Message::FlowRowEdit { bg, row: i, field: FlowField::Value, value: v })
                         .width(90),
                     text_input("bright", &r.bright)
                         .on_input(move |v| Message::FlowRowEdit { bg, row: i, field: FlowField::Bright, value: v })
                         .width(70),
-                    button(text("\u{2715}")).on_press(Message::FlowRowDel { bg, row: i }),
+                    button(text("\u{2715}"))
+                        .style(crate::theme::secondary_button)
+                        .on_press(Message::FlowRowDel { bg, row: i }),
                 ]
                 .spacing(6)
                 .align_y(iced::Center),
@@ -116,11 +126,15 @@ pub(crate) fn body<'a>(app: &'a App, d: &'a Device, bg: bool) -> Element<'a, Mes
     let count = app.flow_count.get(&(d.id.clone(), bg)).cloned().unwrap_or_else(|| "0".into());
     editor = editor.push(
         row![
-            button(text("+ Step")).on_press(Message::FlowRowAdd { bg }),
+            button(text("+ Step"))
+                .style(crate::theme::secondary_button)
+                .on_press(Message::FlowRowAdd { bg }),
             text("Repeat (0=\u{221e}):"),
             text_input("0", &count).on_input(move |value| Message::FlowCountEdit { bg, value }).width(60),
             Space::new().width(Fill),
-            button(text("Start")).on_press(Message::StartCustomFlow { bg }),
+            button(text("Start"))
+                .style(crate::theme::primary_button)
+                .on_press(Message::StartCustomFlow { bg }),
         ]
         .spacing(8)
         .align_y(iced::Center),

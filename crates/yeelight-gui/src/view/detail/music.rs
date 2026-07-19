@@ -19,9 +19,11 @@ pub(crate) fn body<'a>(app: &'a App, d: &'a Device) -> Element<'a, Message> {
             .color(crate::theme::muted())
     };
     column![
-        text("\u{26a1} Instant control (music mode)").size(16),
+        text("\u{266a} Instant control (music mode)").size(16),
         status,
-        button(text(label)).on_press(Message::MusicToggle),
+        button(text(label))
+            .style(crate::theme::primary_button)
+            .on_press(Message::MusicToggle),
     ]
     .spacing(12)
     .into()
