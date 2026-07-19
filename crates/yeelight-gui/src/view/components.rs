@@ -5,6 +5,13 @@ use iced::{Background, Border, Color, Element, Length, Length::Fill, Theme};
 
 use crate::message::Message;
 
+/// Format an iced [`Color`] as an uppercase `#RRGGBB` hex string — the caption shown under
+/// a current-color swatch (bulb preview, ambient/music target color).
+pub(crate) fn hex(color: Color) -> String {
+    let c = |f: f32| (f.clamp(0.0, 1.0) * 255.0).round() as u8;
+    format!("#{:02X}{:02X}{:02X}", c(color.r), c(color.g), c(color.b))
+}
+
 /// A small solid color square (quick-pick / live preview).
 pub(crate) fn swatch<'a>(color: Color, size: f32) -> Element<'a, Message> {
     container(Space::new().width(size).height(size))

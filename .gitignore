@@ -23,3 +23,6 @@ Thumbs.db
 # superpowers brainstorm scratch
 .superpowers/
 docs/superpowers/
+
+# Generated doc renders (source is the .md)
+docs/*.html

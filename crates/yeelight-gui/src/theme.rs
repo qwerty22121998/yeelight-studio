@@ -1,7 +1,7 @@
-//! Ember Dark — the app's default theme and semantic accent colors.
+//! Midnight Blue — the app's default theme and semantic accent colors.
 //!
-//! A flat, warm-dark palette modeled on Impactor's "Plume Dark", with the accent
-//! re-hued from mauve to orange (see `docs/ui-theme-guideline.md` for the full
+//! A flat, cool-dark palette modeled on Impactor's "Plume Dark", with the accent
+//! re-hued to azure blue (see `docs/ui-theme-guideline.md` for the full
 //! spec and migration map). Supplying this as the [`iced::Theme`] re-hues every
 //! built-in-styled widget for free; the standalone [`accent`]/[`success`]/
 //! [`danger`]/[`muted`] colors cover the handful of text accents that sit outside
@@ -48,7 +48,7 @@ fn flat(bg: Color, text: Color) -> button::Style {
     }
 }
 
-/// Primary (accent) button: filled orange with dark text — the Impactor CTA look.
+/// Primary (accent) button: filled azure with dark text — the Impactor CTA look.
 pub(crate) fn primary_button(theme: &Theme, status: button::Status) -> button::Style {
     let p = theme.palette();
     match status {
@@ -88,10 +88,10 @@ pub(crate) fn pick_list(theme: &Theme, status: PickStatus) -> PickStyle {
     }
 }
 
-/// Display name of the Ember Dark theme — its pick-list label and on-disk key.
-pub(crate) const EMBER_NAME: &str = "Ember Dark";
+/// Display name of the Midnight Blue theme — its pick-list label and on-disk key.
+pub(crate) const EMBER_NAME: &str = "Midnight Blue";
 
-/// The Ember Dark theme: orange accent on warm near-black. Cached so every call
+/// The Midnight Blue theme: azure accent on cool near-black. Cached so every call
 /// shares one `Arc`, keeping [`Theme`] equality (used by the theme pick-list and
 /// settings round-trip) stable and pointer-cheap.
 pub(crate) fn ember_dark() -> Theme {
@@ -101,10 +101,10 @@ pub(crate) fn ember_dark() -> Theme {
             Theme::custom(
                 EMBER_NAME.to_string(),
                 iced::theme::Palette {
-                    background: Color::from_rgb8(0x26, 0x20, 0x1a),
-                    text: Color::from_rgb8(0xf2, 0xe0, 0xcf),
-                    primary: Color::from_rgb8(0xfe, 0x80, 0x19),
-                    success: Color::from_rgb8(0xa9, 0xb6, 0x65),
+                    background: Color::from_rgb8(0x10, 0x18, 0x2a),
+                    text: Color::from_rgb8(0xd8, 0xe4, 0xf4),
+                    primary: Color::from_rgb8(0x4d, 0x9d, 0xff),
+                    success: Color::from_rgb8(0x6f, 0xc9, 0xa8),
                     warning: Color::from_rgb8(0xe9, 0xb1, 0x43),
                     danger: Color::from_rgb8(0xea, 0x69, 0x62),
                 },
@@ -113,24 +113,24 @@ pub(crate) fn ember_dark() -> Theme {
         .clone()
 }
 
-/// The default theme preference: Ember Dark.
+/// The default theme preference: Midnight Blue.
 pub(crate) fn default_pref() -> ThemePref {
     ThemePref::Fixed(ember_dark())
 }
 
-/// The orange accent — links, sent log lines, live-color hints.
+/// The azure accent — links, sent log lines, live-color hints.
 pub(crate) fn accent() -> Color {
-    Color::from_rgb8(0xfe, 0x80, 0x19)
+    Color::from_rgb8(0x4d, 0x9d, 0xff)
 }
 
-/// Muted warm-grey for secondary text: subtitles, offline rows, placeholders.
+/// Muted cool-grey for secondary text: subtitles, offline rows, placeholders.
 pub(crate) fn muted() -> Color {
-    Color::from_rgb8(0xb2, 0xa0, 0x8f)
+    Color::from_rgb8(0x89, 0x98, 0xb2)
 }
 
 /// "Online / ok / received" accent.
 pub(crate) fn success() -> Color {
-    Color::from_rgb8(0xa9, 0xb6, 0x65)
+    Color::from_rgb8(0x6f, 0xc9, 0xa8)
 }
 
 /// "Error" accent.

@@ -126,6 +126,17 @@ pub(crate) struct AmbientRun {
     pub(crate) monitor_id: Option<u32>,
 }
 
+/// A running music-capture session: the live-config sender plus the resolved sink
+/// (reuses [`crate::ambient::AmbientSink`] — audio and screen share the color path).
+pub(crate) struct AudioRun {
+    /// Pushes live mode/target/smooth edits to the running driver.
+    pub(crate) cfg_tx: tokio::sync::watch::Sender<crate::audio::AudioConfig>,
+    /// The sink the driver sends through.
+    pub(crate) sink: crate::ambient::AmbientSink,
+    /// Fixed capture input device name (recipe key — changing it restarts capture).
+    pub(crate) input: Option<String>,
+}
+
 /// Bottom-bar status line.
 #[derive(Default)]
 pub(crate) enum Status {
@@ -167,6 +178,8 @@ pub(crate) struct App {
     pub(crate) asked_open: bool,
     /// Active control tab per `(device id, background?)` — each light tabs apart.
     pub(crate) tabs: HashMap<(String, bool), crate::message::DetailTab>,
+    /// User-collapsed detail sections per `(device id, section)`. Absent = expanded.
+    pub(crate) collapsed: HashSet<(String, crate::message::Section)>,
     /// In-progress rename buffer (device id, new name), if editing.
     pub(crate) rename: Option<(String, String)>,
     /// Custom flow-editor draft rows per `(device id, background?)`.
@@ -186,8 +199,23 @@ pub(crate) struct App {
     pub(crate) ambient_cfg: HashMap<String, crate::ambient::AmbientConfig>,
     /// Cached display list for the ambient monitor picker. Enumerating spawns a subprocess
     /// (`hyprctl`/scap), so it's resolved at startup and on each scan, not per redraw.
-    // ponytail: refreshed on scan, not hot-plug. Rescan to pick up a plugged/unplugged display.
     pub(crate) monitors: Vec<crate::ambient::capture::Monitor>,
+    /// Active music-capture sessions per device id (presence = running).
+    pub(crate) audio: HashMap<String, AudioRun>,
+    /// Per-device music-capture UI selections, persisted across tab switches even when stopped.
+    pub(crate) audio_cfg: HashMap<String, crate::audio::AudioConfig>,
+    /// Latest spectrum bars per running device (drives the cava wave). Cleared on stop.
+    pub(crate) audio_bars: HashMap<String, Vec<f32>>,
+    /// Latest derived bulb color per running device (drives the wave's live swatch).
+    pub(crate) audio_color: HashMap<String, crate::ambient::color::Rgb>,
+    /// Cached audio-input device names for the picker. Resolved at startup and on each scan.
+    pub(crate) audio_inputs: Vec<String>,
+    /// Frame counter driving the idle music-capture wave animation (advances while a device's
+    /// section is visible but capture is stopped).
+    pub(crate) audio_phase: u32,
+    /// Which Music-capture sub-tab (Capture / Tune) is shown. Ephemeral UI state, not
+    /// persisted or per-device — one section is visible at a time.
+    pub(crate) audio_tab: crate::message::AudioTab,
     /// Last local interaction per device id; gates notification reconciliation
     /// (see [`SYNC_DEBOUNCE`]).
     pub(crate) last_input: HashMap<String, Instant>,
@@ -220,6 +248,7 @@ impl Default for App {
             inflight: HashSet::new(),
             asked_open: false,
             tabs: HashMap::new(),
+            collapsed: HashSet::new(),
             rename: None,
             flow_rows: HashMap::new(),
             flow_count: HashMap::new(),
@@ -229,6 +258,13 @@ impl Default for App {
             ambient: HashMap::new(),
             ambient_cfg: HashMap::new(),
             monitors: Vec::new(),
+            audio: HashMap::new(),
+            audio_cfg: HashMap::new(),
+            audio_tab: crate::message::AudioTab::default(),
+            audio_bars: HashMap::new(),
+            audio_color: HashMap::new(),
+            audio_inputs: Vec::new(),
+            audio_phase: 0,
             last_input: HashMap::new(),
             logs: VecDeque::new(),
             log_paused: false,
@@ -251,6 +287,9 @@ impl App {
         app.timeout_secs = s.timeout_secs;
         app.theme = resolve_theme(&s.theme_pref);
         app.theme_pref = s.theme_pref;
+        // Restore ambient selections.
+        app.ambient_cfg = s.ambient_cfg;
+        app.audio_cfg = s.audio_cfg;
         // Seed the device list from the cache for an instant UI; the scan below
         // refreshes IPs, opens live connections, and re-saves.
         app.devices = match yeelight_core::registry::load(crate::settings::devices_path()) {
@@ -272,6 +311,8 @@ impl App {
             force_all: self.force_all,
             timeout_secs: self.timeout_secs,
             theme_pref: self.theme_pref.clone(),
+            ambient_cfg: self.ambient_cfg.clone(),
+            audio_cfg: self.audio_cfg.clone(),
         });
     }
 
@@ -280,8 +321,9 @@ impl App {
         self.scanning = true;
         self.scan_progress = 0.0;
         self.status = Status::Ok("scanning…".into());
-        // Refresh the display list while we're enumerating the LAN (cheap, user-initiated).
+        // Refresh the display + audio-input lists while enumerating the LAN (cheap, user-initiated).
         self.monitors = crate::ambient::capture::monitors();
+        self.audio_inputs = crate::audio::capture::inputs();
         let secs = self.timeout_secs.max(1) as u64;
         Task::perform(
             async move {
@@ -457,8 +499,7 @@ impl App {
                         self.status = Status::Ok(format!("{n} device(s) found"));
                         // Cache for next launch, but don't clobber a good cache
                         // with an empty result (a firewalled/transient scan finds
-                        // nothing). ponytail: a stale cache only flashes old
-                        // devices on boot — the next scan corrects it.
+                        // nothing).
                         if !self.devices.is_empty()
                             && let Err(e) = yeelight_core::registry::save(
                                 crate::settings::devices_path(),
@@ -508,6 +549,13 @@ impl App {
             }
             Message::SelectDetailTab { bg, tab } => {
                 if let Some(id) = self.selected_id() { self.tabs.insert((id, bg), tab); }
+                Task::none()
+            }
+            Message::ToggleSection(section) => {
+                if let Some(id) = self.selected_id() {
+                    let key = (id, section);
+                    if !self.collapsed.remove(&key) { self.collapsed.insert(key); }
+                }
                 Task::none()
             }
             Message::SetLightSeg { bg, temp } => {
@@ -621,6 +669,7 @@ impl App {
             }
             Message::AmbientSetRegion(region) => self.ambient_edit(|c| c.region = region),
             Message::AmbientSetMode(mode) => self.ambient_edit(|c| c.mode = mode),
+            Message::AmbientSetSmooth(on) => self.ambient_edit(|c| c.smooth = on),
             Message::AmbientSetTarget { main, on } => {
                 self.ambient_edit(|c| if main { c.main = on } else { c.bg = on })
             }
@@ -628,12 +677,75 @@ impl App {
                 // Monitor is fixed while running; only takes effect on next start.
                 if let Some(id) = self.selected_id() {
                     self.ambient_cfg.entry(id).or_default().monitor_id = monitor_id;
+                    self.save_settings();
                 }
                 Task::none()
             }
             Message::AmbientError { id, error } => {
                 tracing::warn!(%id, %error, "ambient send failed");
                 self.status = Status::Err(format!("ambient: {error}"));
+                Task::none()
+            }
+            Message::AudioToggle => self.audio_toggle(),
+            Message::AudioStarted { id, sink } => {
+                match sink {
+                    Ok(sink) => {
+                        let cfg = self.audio_cfg.get(&id).cloned().unwrap_or_default();
+                        let (cfg_tx, _) = tokio::sync::watch::channel(cfg.clone());
+                        // Register any music session as the shared instant-mode session, so the
+                        // Music tab reflects it and a manual toggle reuses it (same as ambient).
+                        if let Some(music) = &sink.music {
+                            self.music.entry(id.clone()).or_insert_with(|| music.clone());
+                        }
+                        self.audio.insert(id, AudioRun { cfg_tx, sink, input: cfg.input });
+                        self.status = Status::Ok("music capture on".into());
+                    }
+                    Err(e) => self.status = Status::Err(format!("music capture: {e}")),
+                }
+                Task::none()
+            }
+            Message::AudioSetMode(mode) => self.audio_edit(|c| c.mode = mode),
+            Message::AudioSetSmooth(on) => self.audio_edit(|c| c.smooth = on),
+            Message::SelectAudioTab(tab) => {
+                self.audio_tab = tab;
+                Task::none()
+            }
+            Message::AudioSetGain(v) => self.audio_edit(|c| c.gain = v),
+            Message::AudioSetSmoothing(v) => self.audio_edit(|c| c.decay = v),
+            Message::AudioSetBars(n) => self.audio_edit(|c| c.bars = n),
+            Message::AudioSetTarget { main, on } => {
+                self.audio_edit(|c| if main { c.main = on } else { c.bg = on })
+            }
+            Message::AudioSetInput(input) => {
+                // Input is fixed while running; only takes effect on next start.
+                if let Some(id) = self.selected_id() {
+                    self.audio_cfg.entry(id).or_default().input = input;
+                    self.save_settings();
+                }
+                Task::none()
+            }
+            Message::AudioSpectrum { id, bars, color } => {
+                self.audio_bars.insert(id.clone(), bars);
+                self.audio_color.insert(id, color);
+                Task::none()
+            }
+            Message::AudioError { id, error } => {
+                tracing::warn!(%id, %error, "music-capture send failed");
+                self.status = Status::Err(format!("music capture: {error}"));
+                Task::none()
+            }
+            Message::AudioStopped { id, reason } => {
+                // Capture device became unavailable (or never opened): tear the session down
+                // so the UI reverts to "off" instead of a stuck "running".
+                tracing::warn!(%id, %reason, "music capture stopped");
+                self.audio.remove(&id);
+                self.audio_bars.remove(&id);
+                self.audio_color.remove(&id);
+                self.status = Status::Err(format!("music capture stopped: {reason}"));
+                Task::none()
+            }
+            Message::AudioIdleTick => {
+                self.audio_phase = self.audio_phase.wrapping_add(1);
                 Task::none()
             }
             Message::Listening { id, client } => {
@@ -751,8 +863,6 @@ impl App {
             Message::TimeoutChanged(s) => {
                 let digits: String = s.chars().filter(|c| c.is_ascii_digit()).collect();
                 self.timeout_secs = digits.parse().unwrap_or(0);
-                // ponytail: writes per keystroke; the file is a few bytes, so no
-                // debounce. Add one if this ever shows up on a profile.
                 self.save_settings();
                 Task::none()
             }
@@ -837,6 +947,21 @@ impl App {
     /// The active iced theme (resolved from [`App::theme_mode`]).
     pub(crate) fn theme(&self) -> iced::Theme {
         self.theme.clone()
+    }
+
+    /// Whether the given device's `section` is user-collapsed.
+    pub(crate) fn is_collapsed(&self, id: &str, section: crate::message::Section) -> bool {
+        self.collapsed.contains(&(id.to_owned(), section))
+    }
+
+    /// Which programmatic modes currently drive `bg?` light of `id`: `(ambient, music-capture)`.
+    /// A mode drives a light only while running *and* targeting it.
+    pub(crate) fn driving(&self, id: &str, bg: bool) -> (bool, bool) {
+        let amb = self.ambient.contains_key(id)
+            && self.ambient_cfg.get(id).is_some_and(|c| if bg { c.bg } else { c.main });
+        let aud = self.audio.contains_key(id)
+            && self.audio_cfg.get(id).is_some_and(|c| if bg { c.bg } else { c.main });
+        (amb, aud)
     }
 
     /// The active detail tab for the selected device's main or background light.
@@ -971,6 +1096,7 @@ impl App {
         if let Some(run) = self.ambient.get(&id) {
             let _ = run.cfg_tx.send(updated); // live reconfigure
         }
+        self.save_settings();
         Task::none()
     }
 
@@ -1071,6 +1197,113 @@ impl App {
         Task::none()
     }
 
+    /// Apply an edit to the selected device's music-capture config and, if running, push
+    /// it live to the driver (no restart). Persists either way. Mirrors [`ambient_edit`].
+    fn audio_edit(&mut self, f: impl FnOnce(&mut crate::audio::AudioConfig)) -> Task<Message> {
+        let Some(id) = self.selected_id() else { return Task::none() };
+        let cfg = self.audio_cfg.entry(id.clone()).or_default();
+        f(cfg);
+        let updated = cfg.clone();
+        if let Some(run) = self.audio.get(&id) {
+            let _ = run.cfg_tx.send(updated); // live reconfigure
+        }
+        self.save_settings();
+        Task::none()
+    }
+
+    /// Start or stop music-capture mode for the selected device. Mirrors [`ambient_toggle`]:
+    /// prefer an existing music session, else open one if `set_music` is supported, else
+    /// fall back to the rate-limited direct client.
+    fn audio_toggle(&mut self) -> Task<Message> {
+        let Some(id) = self.selected_id() else { return Task::none() };
+
+        // Running → stop: drop the session (subscription ends → capture stops). Leave any
+        // music session up (shared with instant mode / ambient); the user turns it off there.
+        if self.audio.remove(&id).is_some() {
+            self.audio_bars.remove(&id);
+            self.audio_color.remove(&id);
+            self.status = Status::Ok("music capture off".into());
+            return Task::none();
+        }
+
+        // Stopped → start. Need a connected client (like ambient/music).
+        let Some(client) = self.clients.get(&id).cloned() else {
+            self.status =
+                Status::Err("connect first (use a control), then enable music capture".into());
+            return Task::none();
+        };
+
+        let (has_music, caps) = {
+            let device = &self.devices[self.selected.unwrap()];
+            let has = |m: &str| self.force_all || device.supports(m);
+            (
+                has("set_music"),
+                crate::ambient::Caps {
+                    main_rgb: has("set_rgb"),
+                    main_ct: has("set_ct_abx"),
+                    bg_rgb: has("bg_set_rgb"),
+                    bg_ct: has("bg_set_ct_abx"),
+                },
+            )
+        };
+        let has_color = caps.main_rgb || caps.main_ct || caps.bg_rgb || caps.bg_ct;
+
+        // Seed a default config with targets reconciled to what this bulb can color.
+        self.audio_cfg.entry(id.clone()).or_insert_with(|| {
+            let (main, bg) = crate::ambient::default_targets(caps);
+            crate::audio::AudioConfig { main, bg, ..Default::default() }
+        });
+
+        if let Some(music) = self.music.get(&id).cloned() {
+            let sink = crate::ambient::AmbientSink { client, music: Some(music), caps };
+            self.status = Status::Ok("music capture on (music)".into());
+            return Task::done(Message::AudioStarted { id, sink: Ok(sink) });
+        }
+
+        if has_music {
+            self.status = Status::Ok("music capture: starting music…".into());
+            let c = Arc::clone(&client);
+            return Task::perform(
+                async move {
+                    MusicConnection::start(&c, DEFAULT_MUSIC_PORT)
+                        .await
+                        .map(|m| Arc::new(tokio::sync::Mutex::new(m)))
+                        .map_err(|e| e.to_string())
+                },
+                move |res| match res {
+                    Ok(music) => Message::AudioStarted {
+                        id: id.clone(),
+                        sink: Ok(crate::ambient::AmbientSink {
+                            client: Arc::clone(&client),
+                            music: Some(music),
+                            caps,
+                        }),
+                    },
+                    // Music handshake failed: degrade to the direct (rate-limited) sink if the
+                    // bulb has any color control, rather than failing the whole feature.
+                    Err(_) if has_color => Message::AudioStarted {
+                        id: id.clone(),
+                        sink: Ok(crate::ambient::AmbientSink {
+                            client: Arc::clone(&client),
+                            music: None,
+                            caps,
+                        }),
+                    },
+                    Err(e) => Message::AudioStarted { id: id.clone(), sink: Err(e) },
+                },
+            );
+        }
+
+        if has_color {
+            let sink = crate::ambient::AmbientSink { client, music: None, caps };
+            self.status = Status::Ok("music capture on (fallback 2fps)".into());
+            return Task::done(Message::AudioStarted { id, sink: Ok(sink) });
+        }
+
+        self.status = Status::Err("device has no color control for music capture".into());
+        Task::none()
+    }
+
     /// Run a one-shot async operation against the selected device's client.
     ///
     /// If a cached client exists it is reused; otherwise a temporary connection is
@@ -1092,10 +1325,6 @@ impl App {
         } else {
             let device = self.devices[i].clone();
             let force = self.force_all;
-            // ponytail: the freshly connected client is not inserted into self.clients
-            // because we're in an async closure with no access to &mut self. These
-            // one-shot actions are infrequent; color/bright/temp go through dispatch()
-            // which does cache via Message::Connected.
             Task::perform(
                 async move {
                     let c = Client::connect(device).await.map(Arc::new).map_err(|e| e.to_string())?;
@@ -1141,6 +1370,28 @@ impl App {
                 },
                 build_ambient_stream,
             ));
+        }
+        for (id, run) in &self.audio {
+            subs.push(Subscription::run_with(
+                AudioSub {
+                    id: id.clone(),
+                    input: run.input.clone(),
+                    sink: run.sink.clone(),
+                    cfg_rx: run.cfg_tx.subscribe(),
+                },
+                build_audio_stream,
+            ));
+        }
+        // Idle wave animation: keep the Music-capture visualizer alive (like the preview) while
+        // the selected device's section is visible but capture is stopped. One ~24fps ticker.
+        if self.screen == crate::message::Screen::Device
+            && let Some(d) = self.selected.and_then(|i| self.devices.get(i))
+            && !self.audio.contains_key(&d.id)
+            && ["set_rgb", "bg_set_rgb", "set_ct_abx", "bg_set_ct_abx"]
+                .iter()
+                .any(|m| self.force_all || d.supports(m))
+        {
+            subs.push(iced::time::every(Duration::from_millis(42)).map(|_| Message::AudioIdleTick));
         }
         if self.scanning {
             subs.push(iced::time::every(Duration::from_millis(100)).map(|_| Message::Tick));
@@ -1227,6 +1478,28 @@ fn build_ambient_stream(sub: &AmbientSub) -> Pin<Box<dyn Stream<Item = Message> 
     crate::ambient::run_stream(sub.id.clone(), sub.sink.clone(), sub.cfg_rx.clone())
 }
 
+/// Subscription key + source for one device's music-capture driver. Hashed by
+/// `(id, input)` so mode/target edits (pushed via the cfg channel) don't restart capture,
+/// but switching the input device does.
+struct AudioSub {
+    id: String,
+    input: Option<String>,
+    sink: crate::ambient::AmbientSink,
+    cfg_rx: tokio::sync::watch::Receiver<crate::audio::AudioConfig>,
+}
+
+impl Hash for AudioSub {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+        self.input.hash(state);
+    }
+}
+
+/// Build the music-capture driver stream for a device (delegates to the audio module).
+fn build_audio_stream(sub: &AudioSub) -> Pin<Box<dyn Stream<Item = Message> + Send>> {
+    crate::audio::run_stream(sub.id.clone(), sub.sink.clone(), sub.cfg_rx.clone())
+}
+
 /// Open (creating parent dirs) the command log for appending. Best-effort: any
 /// failure is logged and logging falls back to the in-memory screen only.
 fn open_log_file() -> Option<File> {
@@ -1247,7 +1520,6 @@ fn open_log_file() -> Option<File> {
 }
 
 /// Format a wall-clock time as `HH:MM:SS.mmm` (UTC).
-// ponytail: UTC, no tz crate. Add chrono/time if local time matters for the log.
 pub(crate) fn fmt_time(t: SystemTime) -> String {
     let d = t.duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default();
     let secs = d.as_secs();
@@ -1349,8 +1621,6 @@ fn run_task(client: Arc<Client>, op: Op, key: OpKey) -> Task<Message> {
 
 /// Resolve a [`ThemePref`] to a concrete iced theme. `System` queries the OS once;
 /// an unspecified or failed detection falls back to dark.
-// ponytail: resolved at call time, not live-polled. Add a subscription that
-// re-detects if following OS theme changes mid-session ever matters.
 fn resolve_theme(pref: &ThemePref) -> iced::Theme {
     match pref {
         ThemePref::Fixed(theme) => theme.clone(),

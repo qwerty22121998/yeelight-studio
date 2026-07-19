@@ -21,8 +21,6 @@ use yeelight_core::discovery::{SSDP_ADDR, SSDP_PORT};
 
 /// Methods every mock advertises. A real bulb's set varies by model; a dev mock
 /// claims everything so all GUI controls are live.
-// ponytail: superset on purpose. Trim per-model only if you need to test the
-// "control hidden because unsupported" path.
 const SUPPORT: &[&str] = &[
     "get_prop", "set_power", "toggle", "set_bright", "start_cf", "stop_cf", "set_scene",
     "set_ct_abx", "set_rgb", "set_hsv", "set_default", "set_name", "set_adjust", "adjust_bright",

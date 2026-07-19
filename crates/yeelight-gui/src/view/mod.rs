@@ -2,9 +2,11 @@
 
 pub(crate) mod components;
 pub(crate) mod detail;
+pub(crate) mod dial;
 pub(crate) mod logging;
 pub(crate) mod rail;
 pub(crate) mod settings;
+pub(crate) mod wave;
 
 use iced::widget::{column, container, progress_bar, row, text};
 use iced::{Element, Length::Fill};

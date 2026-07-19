@@ -10,7 +10,7 @@ workspace = true
 
 [dependencies]
 yeelight-core = { path = "../yeelight-core" }
-iced = { version = "0.14", features = ["tokio"] }
+iced = { version = "0.14", features = ["tokio", "canvas"] }
 iced_aw = { version = "0.14", default-features = false, features = ["color_picker"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 dark-light = "2"
@@ -24,8 +24,15 @@ tokio = { version = "1", features = ["sync"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# Linux/Wayland captures via the `grim` CLI (wlr-screencopy) — scap's pipewire-portal
-# engine dies instantly on wlroots compositors (proven: 0 frames, closed channel). Other
-# platforms keep scap (ScreenCaptureKit / DXGI), which works there.
-[target.'cfg(not(target_os = "linux"))'.dependencies]
-scap = { package = "scap-rs", version = "0.1.0" }
+# Cross-platform capture default (X11/macOS/Windows + attempted Wayland).
+xcap = "0.9"
+
+# Rust-native audio capture (the audio analog of xcap: ALSA/CoreAudio/WASAPI, no
+# subprocess) + pure-Rust FFT for the music-reactive spectrum.
+cpal = "0.18"
+rustfft = "6"
+
+# Linux fallback: pure-Rust wlr-screencopy for wlroots (Hyprland/sway/river), used
+# when xcap's Wayland path can't deliver frames.
+[target.'cfg(target_os = "linux")'.dependencies]
+libwayshot = "0.8"

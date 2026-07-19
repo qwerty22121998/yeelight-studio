@@ -68,12 +68,23 @@ average+saturation), and which light(s) to drive; it streams over music mode at 
 available, otherwise falls back to rate-limited `set_rgb` at ~2 fps. Targets that only support
 color temperature (white-only bulbs) are driven by a warm/cool K mapping instead of full RGB.
 
-- **Linux (Wayland):** captures via the `grim` CLI (wlr-screencopy), so install `grim`.
-  Monitor enumeration uses `hyprctl` (Hyprland); other wlroots compositors capture fine but
-  the multi-monitor picker won't list displays. No PipeWire/portal and no screen-share dialog.
-- **macOS / Windows:** capture via `scap-rs` (ScreenCaptureKit / DXGI); build needs `libclang`
-  (`clang`). macOS prompts for Screen Recording permission on first use; Windows shows no
-  prompt (a capture border may appear).
+Capture is Rust-native (no subprocess) and picked at runtime:
+
+- **Linux (Wayland, wlroots):** `libwayshot` (wlr-screencopy) on Hyprland / sway / river.
+  No PipeWire/portal and no screen-share dialog.
+- **Everything else** (Linux X11, macOS, Windows, portal Wayland): [`xcap`](https://crates.io/crates/xcap)
+  (ScreenCaptureKit / DXGI / WGC). macOS prompts for Screen Recording permission on first use;
+  Windows shows no prompt (a capture border may appear).
+
+### Music capture (GUI)
+
+The **Music capture** section is the audio twin of Ambient: it captures your system audio,
+runs an FFT, and drives the bulb from the spectrum in real time — Spectrum (bass/mid/treble →
+R/G/B), Pulse (energy → warm-white beat), Rainbow (pitch → hue), or VU (hue steps on each beat).
+Same sink as Ambient (music mode when available, else rate-limited direct / CT), plus an on-screen
+wave visualizer. Audio capture is via [`cpal`](https://crates.io/crates/cpal)
+(ALSA / CoreAudio / WASAPI); on Linux you need the ALSA dev headers (`libasound2-dev` /
+`alsa-lib`) to build.
 
 ## Development
 

@@ -37,7 +37,7 @@ pub(crate) fn pane(app: &App) -> Element<'_, Message> {
         .spacing(10)
         .align_y(iced::Center);
 
-    // Newest first. ponytail: reverse iteration, no scroll-to-bottom bookkeeping.
+    // Newest first.
     let mut list = column![].spacing(2);
     let mut shown = 0usize;
     for e in app.logs.iter().rev() {

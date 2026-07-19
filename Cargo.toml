@@ -12,3 +12,18 @@ missing_docs = "warn"
 
 [workspace.lints.clippy]
 all = "warn"
+
+# Ambient capture reduces a full-screen frame per grab. In an unoptimized debug build the
+# per-pixel work in libwayshot/image/xcap costs ~10× more CPU (measured ~25% of a core vs
+# ~1% in release), which reads as "ambient is a CPU hog" during `cargo run`. Optimize just
+# those capture crates in dev so debug runs feel like release; the rest stays debuggable.
+[profile.dev.package.libwayshot]
+opt-level = 3
+[profile.dev.package.image]
+opt-level = 3
+[profile.dev.package.xcap]
+opt-level = 3
+# Music-capture: the FFT runs per audio frame (~43×/s). Debug rustfft is a CPU hog
+# for the same reason as the capture crates above, so optimize it in dev too.
+[profile.dev.package.rustfft]
+opt-level = 3

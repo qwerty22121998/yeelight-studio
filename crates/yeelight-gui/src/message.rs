@@ -70,6 +70,29 @@ pub(crate) enum DetailTab {
     Music,
 }
 
+/// A collapsible detail-pane section, keyed per device for its collapse state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum Section {
+    /// The main light's manual controls.
+    Main,
+    /// The background light's manual controls.
+    Bg,
+    /// The device-wide ambient screen-capture section.
+    Ambient,
+    /// The device-wide music-capture section.
+    Audio,
+}
+
+/// Which sub-tab of the device-wide Music-capture section is shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum AudioTab {
+    /// Input device, color-mapping mode, targets, smoothing.
+    #[default]
+    Capture,
+    /// Live spectrum tuning: sensitivity, smoothing, bars.
+    Tune,
+}
+
 /// Which editable field of a custom flow-editor row changed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FlowField {
@@ -168,6 +191,8 @@ pub(crate) enum Message {
         /// The tab to show.
         tab: DetailTab,
     },
+    /// Collapse or expand a detail-pane section for the selected device.
+    ToggleSection(Section),
     /// Pick the Light tab's segment: `temp` = color-temperature, else color.
     SetLightSeg {
         /// Background light if true, else main.
@@ -278,6 +303,8 @@ pub(crate) enum Message {
     },
     /// Change the ambient capture monitor (None = primary). Only while stopped.
     AmbientSetMonitor(Option<u32>),
+    /// Toggle smooth (faded) ambient transitions instead of instant jumps.
+    AmbientSetSmooth(bool),
     /// An ambient send failed (surfaced in the status bar).
     AmbientError {
         /// Device id.
@@ -285,6 +312,62 @@ pub(crate) enum Message {
         /// Error text.
         error: String,
     },
+    /// Start or stop music-capture (audio-reactive) mode for the selected device.
+    AudioToggle,
+    /// A resolved music-capture sink is ready (music started or fell back to direct), or failed.
+    AudioStarted {
+        /// Device id the session belongs to.
+        id: String,
+        /// The sink to drive the bulb, or an error string.
+        sink: Result<crate::ambient::AmbientSink, String>,
+    },
+    /// Change the music-capture color-mapping mode for the selected device.
+    AudioSetMode(crate::audio::dsp::MusicMode),
+    /// Change the music-capture input device (`None` = default). Only while stopped.
+    AudioSetInput(Option<String>),
+    /// Toggle a music-capture target light (`main` = main light, else background).
+    AudioSetTarget {
+        /// Main light if true, else background.
+        main: bool,
+        /// Enable that target.
+        on: bool,
+    },
+    /// Toggle smooth (faded) music-capture transitions instead of instant jumps.
+    AudioSetSmooth(bool),
+    /// Switch the Music-capture section's sub-tab (Capture ↔ Tune).
+    SelectAudioTab(AudioTab),
+    /// Tune tab: set the visualizer sensitivity (spectrum magnitude gain).
+    AudioSetGain(f32),
+    /// Tune tab: set the visualizer smoothing (per-frame bar decay).
+    AudioSetSmoothing(f32),
+    /// Tune tab: set the visualizer bar count.
+    AudioSetBars(usize),
+    /// Latest spectrum bars + derived color for a running capture (drives the wave/swatch).
+    AudioSpectrum {
+        /// Device id.
+        id: String,
+        /// Per-band magnitudes `0..=1`, `NUM_BARS` of them.
+        bars: Vec<f32>,
+        /// The color sent to the bulb this frame.
+        color: crate::ambient::color::Rgb,
+    },
+    /// A music-capture send failed (surfaced in the status bar; capture keeps running).
+    AudioError {
+        /// Device id.
+        id: String,
+        /// Error text.
+        error: String,
+    },
+    /// Music-capture stopped itself — the capture device became unavailable (or never
+    /// opened). Distinct from [`AudioError`]: this tears the session down, not just a warning.
+    AudioStopped {
+        /// Device id.
+        id: String,
+        /// Why it stopped.
+        reason: String,
+    },
+    /// Animation tick for the idle music-capture wave (keeps it alive while stopped).
+    AudioIdleTick,
     /// A control was activated for the selected device.
     Command {
         /// Background light?
