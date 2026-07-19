@@ -73,7 +73,8 @@ fn general(app: &App) -> Element<'_, Message> {
 
 /// Appearance tab: pick any built-in iced theme, or follow the OS.
 fn appearance(app: &App) -> Element<'_, Message> {
-    let prefs: Vec<ThemePref> = std::iter::once(ThemePref::System)
+    let prefs: Vec<ThemePref> = std::iter::once(crate::theme::default_pref())
+        .chain(std::iter::once(ThemePref::System))
         .chain(iced::Theme::ALL.iter().cloned().map(ThemePref::Fixed))
         .collect();
     let list = pick_list(prefs, Some(app.theme_pref.clone()), Message::ThemeChanged);

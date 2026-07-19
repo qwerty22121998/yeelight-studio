@@ -8,6 +8,7 @@ mod app;
 mod message;
 mod presets;
 mod settings;
+mod theme;
 mod view;
 
 use app::App;

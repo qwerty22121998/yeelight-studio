@@ -25,7 +25,7 @@ impl Default for Settings {
     /// Matches [`crate::app::App`]'s defaults so a missing file behaves like a
     /// fresh install.
     fn default() -> Self {
-        Self { force_all: false, timeout_secs: 3, theme_pref: ThemePref::default() }
+        Self { force_all: false, timeout_secs: 3, theme_pref: crate::theme::default_pref() }
     }
 }
 
@@ -64,6 +64,9 @@ pub(crate) fn log_path() -> PathBuf {
 /// Resolve a stored theme string back to a [`ThemePref`]. Unknown strings (e.g. a
 /// theme removed from a newer iced) fall back to the default.
 fn theme_pref_from_str(s: &str) -> ThemePref {
+    if s == crate::theme::EMBER_NAME {
+        return crate::theme::default_pref();
+    }
     if s == ThemePref::System.to_string() {
         return ThemePref::System;
     }
@@ -71,7 +74,7 @@ fn theme_pref_from_str(s: &str) -> ThemePref {
         .iter()
         .find(|t| t.to_string() == s)
         .map(|t| ThemePref::Fixed(t.clone()))
-        .unwrap_or_default()
+        .unwrap_or_else(crate::theme::default_pref)
 }
 
 /// Load settings, falling back to defaults on a missing or unreadable file.
@@ -126,6 +129,7 @@ mod tests {
     #[test]
     fn theme_pref_round_trips() {
         assert_eq!(theme_pref_from_str(&ThemePref::System.to_string()), ThemePref::System);
+        assert_eq!(theme_pref_from_str(crate::theme::EMBER_NAME), crate::theme::default_pref());
         for t in iced::Theme::ALL {
             let pref = ThemePref::Fixed(t.clone());
             assert_eq!(theme_pref_from_str(&pref.to_string()), pref);
@@ -134,6 +138,6 @@ mod tests {
 
     #[test]
     fn unknown_theme_falls_back_to_default() {
-        assert_eq!(theme_pref_from_str("NoSuchTheme"), ThemePref::default());
+        assert_eq!(theme_pref_from_str("NoSuchTheme"), crate::theme::default_pref());
     }
 }

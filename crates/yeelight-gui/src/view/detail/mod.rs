@@ -12,7 +12,7 @@ pub(crate) mod timer;
 pub(crate) mod white;
 
 use iced::widget::{button, column, container, row, scrollable, slider, text, text_input, Space};
-use iced::{Border, Color, Element, Length::Fill, Theme};
+use iced::{Border, Element, Length::Fill, Theme};
 use yeelight_core::Device;
 
 use super::components::{swatch, tab_strip};
@@ -154,7 +154,7 @@ fn header<'a>(app: &'a App, d: &'a Device) -> Element<'a, Message> {
     };
 
     row![
-        column![name, text(sub).size(12).color(Color::from_rgb(0.55, 0.58, 0.63))].spacing(2),
+        column![name, text(sub).size(12).color(crate::theme::muted())].spacing(2),
         Space::new().width(Fill),
         save,
     ]

@@ -15,9 +15,9 @@ pub(crate) fn view(app: &App) -> Element<'_, Message> {
         let selected = app.selected == Some(i) && app.screen == Screen::Device;
         let online = app.clients.contains_key(&d.id) || d.state.power.is_some();
         let dot = if online {
-            Color::from_rgb(0.2, 0.83, 0.6)
+            crate::theme::success()
         } else {
-            Color::from_rgb(0.42, 0.45, 0.5)
+            crate::theme::muted()
         };
         let chip_color = d
             .state

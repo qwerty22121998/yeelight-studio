@@ -24,7 +24,7 @@ pub(crate) fn chip<'a>(label: &'a str, on: bool, msg: Message) -> Element<'a, Me
             let mut s = button::secondary(theme, status);
             if on {
                 s.background = Some(Background::Color(theme.palette().primary));
-                s.text_color = Color::WHITE;
+                s.text_color = theme.palette().background;
             }
             s.border.radius = 14.0.into();
             s

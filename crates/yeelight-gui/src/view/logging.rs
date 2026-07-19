@@ -1,7 +1,7 @@
 //! Command-log pane: raw wire traffic (sent + received) with a manager toolbar.
 
 use iced::widget::{button, column, container, pick_list, row, scrollable, text};
-use iced::{Color, Element, Font, Length::Fill};
+use iced::{Element, Font, Length::Fill};
 use yeelight_core::Direction;
 
 use crate::app::{fmt_time, App};
@@ -41,8 +41,8 @@ pub(crate) fn pane(app: &App) -> Element<'_, Message> {
             continue;
         }
         let (arrow, color) = match e.direction {
-            Direction::Sent => ("\u{2192}", Color::from_rgb(0.45, 0.7, 1.0)),
-            Direction::Received => ("\u{2190}", Color::from_rgb(0.4, 0.85, 0.55)),
+            Direction::Sent => ("\u{2192}", crate::theme::accent()),
+            Direction::Received => ("\u{2190}", crate::theme::success()),
         };
         let row_text = format!("{} {arrow} {} {}", fmt_time(e.time), e.device, e.line);
         list = list.push(text(row_text).font(Font::MONOSPACE).size(12).color(color));

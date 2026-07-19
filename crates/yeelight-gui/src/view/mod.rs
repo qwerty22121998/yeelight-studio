@@ -7,7 +7,7 @@ pub(crate) mod rail;
 pub(crate) mod settings;
 
 use iced::widget::{column, container, progress_bar, row, text};
-use iced::{Color, Element, Length::Fill};
+use iced::{Element, Length::Fill};
 
 use crate::app::{App, Status};
 use crate::message::{Message, Screen};
@@ -38,7 +38,7 @@ fn status_bar(app: &App) -> Element<'_, Message> {
             Status::Idle => text("ready").into(),
             Status::Ok(s) => text(s.clone()).into(),
             Status::Err(e) => text(format!("error: {e}"))
-                .color(Color::from_rgb(0.9, 0.3, 0.3))
+                .color(crate::theme::danger())
                 .into(),
         }
     };
