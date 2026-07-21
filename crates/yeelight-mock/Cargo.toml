@@ -1,0 +1,17 @@
+[package]
+name = "yeelight-mock"
+description = "Fake Yeelight bulbs for development without hardware: answer discovery and serve the control protocol on loopback."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+yeelight-core = { path = "../yeelight-core" }
+tokio = { version = "1", features = ["net", "rt-multi-thread", "macros", "io-util", "sync"] }
+serde_json = "1"
+socket2 = { version = "0.5", features = ["all"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
