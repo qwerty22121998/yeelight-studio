@@ -1,0 +1,28 @@
+# Rust build artifacts
+/target
+
+# Saved device registry (runtime data, host-specific)
+yeelight-devices.toml
+
+# Environment / secrets
+.env
+.env.local
+*.local
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# superpowers brainstorm scratch
+.superpowers/
+docs/superpowers/
+
+# Generated doc renders (source is the .md)
+docs/*.html
