@@ -1,0 +1,38 @@
+[package]
+name = "yeelight-gui"
+description = "Desktop GUI for discovering and controlling Yeelight WiFi LEDs."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+yeelight-core = { path = "../yeelight-core" }
+iced = { version = "0.14", features = ["tokio", "canvas"] }
+iced_aw = { version = "0.14", default-features = false, features = ["color_picker"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+dark-light = "2"
+rfd = "0.15"
+dirs = "6"
+open = "5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+tokio = { version = "1", features = ["sync"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Cross-platform capture default (X11/macOS/Windows + attempted Wayland).
+xcap = "0.9"
+
+# Rust-native audio capture (the audio analog of xcap: ALSA/CoreAudio/WASAPI, no
+# subprocess) + pure-Rust FFT for the music-reactive spectrum.
+cpal = "0.18"
+rustfft = "6"
+
+# Linux fallback: pure-Rust wlr-screencopy for wlroots (Hyprland/sway/river), used
+# when xcap's Wayland path can't deliver frames.
+[target.'cfg(target_os = "linux")'.dependencies]
+libwayshot = "0.8"
